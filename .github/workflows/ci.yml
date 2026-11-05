@@ -22,9 +22,9 @@ jobs:
       # in tests/helpers.py; integration tests start their own Postgres container.
       LG_ENV: ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
 
@@ -48,9 +48,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
 
@@ -64,8 +64,12 @@ jobs:
         run: make install migrate
 
       - name: API liveness and readiness against the real stack
+        # The venv's python is used directly (not `uv run`): a lingering `uv run`
+        # process holds uv's cache lock and makes setup-uv's post-job cache prune fail.
         run: |
-          uv run python -m uvicorn --factory apps.api.main:create_app --host 127.0.0.1 --port 8000 &
+          .venv/bin/python -m uvicorn --factory apps.api.main:create_app --host 127.0.0.1 --port 8000 &
+          API_PID=$!
+          trap 'kill $API_PID 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/healthz && break; sleep 1; done
           curl -sf http://127.0.0.1:8000/healthz
           curl -sf http://127.0.0.1:8000/readyz | tee /tmp/readyz.json
