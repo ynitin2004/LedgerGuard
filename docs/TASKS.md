@@ -5,7 +5,7 @@ Status: ✅ done · 🟡 in progress / partially verified · ⬜ not started
 
 | M | Weeks | Deliverable | Status |
 |---|---|---|---|
-| 0 | 1 | Foundation | 🟡 implemented and verified locally; CI not yet run on GitHub |
+| 0 | 1 | Foundation | ✅ done — verified locally and CI green (run 42002451764) |
 | 1 | 2 | api_clients, transactions API, idempotency, audit, problem+json | ⬜ |
 | 2 | 3–4 | Synthetic data, rules v1, features, LR model, policy, decisions endpoint, first k6 | ⬜ |
 | 3 | 5 | Outbox, publisher, consumers + inbox, retry/DLQ, replay CLI | ⬜ |
@@ -30,7 +30,7 @@ Acceptance: `make up && make test` green on a clean clone (`./scripts/dev.ps1 up
 - [x] Tests: 13 unit + 1 integration (Testcontainers)
 - [x] Ruff, mypy (strict), pytest config; GitHub Actions `ci.yml` (quality + compose smoke jobs)
 - [x] Docs: CLAUDE.md, README, PRD, ARCHITECTURE, DATA_MODEL, API_SPEC, TASKS, TESTING, DECISIONS, SECURITY, OBSERVABILITY, FAILURE_MATRIX, BENCHMARK, MODEL_CARD
-- [ ] First commit + push to a GitHub remote, then a green CI run (needs your remote / approval)
+- [x] Pushed to github.com/ynitin2004/LedgerGuard; CI green: https://github.com/ynitin2004/LedgerGuard/actions/runs/42002451764
 
 ## Backlog items found during M0 planning (assigned)
 - [ ] M1: create `ledgerguard_app` DB role (least privilege; needed for `REVOKE UPDATE, DELETE` on append-only tables)
