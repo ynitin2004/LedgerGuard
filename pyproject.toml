@@ -1,0 +1,64 @@
+[project]
+name = "ledgerguard-apps"
+version = "0.0.0"
+description = "LedgerGuard AI — API and worker processes (workspace root)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["ledgerguard"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/ledgerguard"]
+
+[tool.uv.sources]
+ledgerguard = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "httpx>=0.27",
+    "testcontainers>=4.8",
+]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["packages/ledgerguard/src", "."]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "ASYNC", "RUF", "SIM", "PT", "DTZ"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"migrations/**" = ["S"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["packages/ledgerguard/src", "apps", "migrations", "tests"]
+explicit_package_bases = true
+mypy_path = ["packages/ledgerguard/src", "."]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs Docker (Testcontainers); deselect with -m 'not integration'",
+]
+filterwarnings = [
+    # Starlette suggests a renamed httpx fork; we stay on the established httpx package.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]

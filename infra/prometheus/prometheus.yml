@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Application metrics (API, later workers) arrive via OTLP and are re-exported here.
+  - job_name: otel-collector-app-metrics
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # The collector's own health/throughput.
+  - job_name: otel-collector-self
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # Broker metrics (consumer lag panels in M3/M6).
+  - job_name: redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets: ["redpanda:9644"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint, typecheck, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # No production credentials anywhere in CI. Settings used by tests are built
+      # in tests/helpers.py; integration tests start their own Postgres container.
+      LG_ENV: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run python -m ruff check .
+
+      - name: Ruff format
+        run: uv run python -m ruff format --check .
+
+      - name: mypy
+        run: uv run python -m mypy
+
+      - name: pytest (unit + Testcontainers integration)
+        run: uv run python -m pytest
+
+  stack:
+    name: compose stack smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Validate compose file
+        run: cp .env.example .env && docker compose config -q
+
+      - name: make up (wait for healthchecks)
+        run: make up
+
+      - name: make migrate
+        run: make install migrate
+
+      - name: API liveness and readiness against the real stack
+        run: |
+          uv run python -m uvicorn --factory apps.api.main:create_app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:8000/healthz
+          curl -sf http://127.0.0.1:8000/readyz | tee /tmp/readyz.json
+          grep -q '"status":"ready"' /tmp/readyz.json
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose ps && docker compose logs --tail 80
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
