@@ -1,4 +1,22 @@
-# LedgerGuard AI — instructions for Claude Code
+# LedgerGuard AI — instructions for Claude Code (and Codex, via AGENTS.md)
+
+## ⚠ ONE-TIME: new-machine setup (do this first, then delete this whole section)
+The first PC had tools blocked or missing. On a new PC, before any milestone work:
+1. Check the prerequisites and report the versions: `git`, `uv` (≥0.11), `docker` + `docker compose`. Python 3.12 comes via
+   uv (`.python-version`); don't install it system-wide.
+2. Tools that weren't installed on the first PC. Offer to install each one, and ask the user first (system install):
+   - `gh` (GitHub CLI): watch CI with `gh run watch`. The first PC polled the REST API instead.
+   - `make` (Linux/macOS usually have it): optional. `scripts/dev.ps1` has the same targets on Windows.
+   - `actionlint`: optional, lints `.github/workflows/*.yml` (`docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint`).
+   - **Not** k6: it runs through the `grafana/k6` Docker image from M2 on (ADR-010). Never install `httpx2`; tests use `httpx`.
+3. Workarounds from the first PC. Keep them, they work everywhere: tools run as `uv run python -m <tool>`, because Windows
+   Application Control blocked `.venv\Scripts\*.exe` (os error 4551, ADR-016). Host URLs use `127.0.0.1` (ADR-009).
+   Postgres is on 55432, because 5432 was taken.
+4. Verify: `uv sync`, `cp .env.example .env` (`dev.ps1 up` does this), `up`, `migrate`, `lint`, `typecheck`, `test`. All must
+   pass. Then `curl http://127.0.0.1:8000/readyz` with the API running should return `"status":"ready"`.
+5. Set the git identity repo-locally: `user.name=ynitin2004`, `user.email=ynitin2004@users.noreply.github.com`.
+6. When steps 1–5 pass, **delete this section** from CLAUDE.md and the matching line in AGENTS.md. Commit as
+   `chore: complete one-time machine setup`.
 
 ## Identity
 Simulated payment-risk platform. Financial state is **deterministic**: rules + versioned ML + explicit policy
