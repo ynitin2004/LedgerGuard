@@ -6,7 +6,7 @@ Status: ✅ done · 🟡 in progress / partially verified · ⬜ not started
 | M | Weeks | Deliverable | Status |
 |---|---|---|---|
 | 0 | 1 | Foundation | ✅ done — verified locally and CI green (run 42002451764) |
-| 1 | 2 | api_clients, transactions API, idempotency, audit, problem+json | 🟡 implemented and verified locally; CI pending |
+| 1 | 2 | api_clients, transactions API, idempotency, audit, problem+json | ✅ done — verified locally and CI green (run 42166619870) |
 | 2 | 3–4 | Synthetic data, rules v1, features, LR model, policy, decisions endpoint, first k6 | ⬜ |
 | 3 | 5 | Outbox, publisher, consumers + inbox, retry/DLQ, replay CLI | ⬜ |
 | 4 | 6–7 | Investigator: evidence, LLM client, validation, cases | ⬜ |
@@ -46,7 +46,7 @@ Acceptance (plan v2): Hypothesis property tests; Testcontainers test where 50 co
 - [x] Janitor worker: `python -m apps.worker janitor`
 - [x] Tests: 50 unit/property + 15 integration/concurrency (65 total, all passing locally)
 - [x] CI stack job: create client → POST → replay → 409 against the compose stack
-- [ ] CI green on GitHub
+- [x] CI green: https://github.com/ynitin2004/LedgerGuard/actions/runs/42166619870
 
 ## Backlog items found during M0 planning (assigned)
 - [x] M1: create `ledgerguard_app` DB role (least privilege; needed for `REVOKE UPDATE, DELETE` on append-only tables)
