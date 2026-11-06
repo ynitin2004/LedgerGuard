@@ -43,6 +43,9 @@ class CorrelationIdMiddleware:
                 break
         cid = resolve_correlation_id(raw)
 
+        # Also exposed as request.state.correlation_id: the scope dict is shared with the
+        # outer error middleware, which runs after the context variable is reset.
+        scope.setdefault("state", {})["correlation_id"] = cid
         token = correlation_id_var.set(cid)
         structlog.contextvars.bind_contextvars(correlation_id=cid)
         span = trace.get_current_span()
@@ -51,7 +54,12 @@ class CorrelationIdMiddleware:
 
         async def send_with_header(message: Message) -> None:
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
+                # Replace rather than append: error responses may already carry it.
+                headers = [
+                    (k, v)
+                    for k, v in message.get("headers", [])
+                    if k.decode("latin-1").lower() != HEADER_NAME
+                ]
                 headers.append((HEADER_NAME.encode("latin-1"), cid.encode("latin-1")))
                 message["headers"] = headers
             await send(message)

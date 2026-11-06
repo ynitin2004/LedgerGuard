@@ -1,6 +1,7 @@
 """Alembic environment (async, asyncpg).
 
-URL precedence: ``sqlalchemy.url`` set programmatically (tests) > ``LG_DATABASE_URL``.
+URL precedence: ``sqlalchemy.url`` set programmatically (tests) >
+``LG_MIGRATION_DATABASE_URL`` (schema owner) > ``LG_DATABASE_URL``.
 Each migration runs in its own transaction (``transaction_per_migration``) so a
 failed migration never leaves a half-applied revision behind.
 """
@@ -14,6 +15,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ledgerguard.infrastructure.db import models  # noqa: F401 - registers tables on Base
 from ledgerguard.infrastructure.db.base import Base
 
 config = context.config
@@ -29,7 +31,8 @@ def _database_url() -> str:
         return url
     from ledgerguard.config import get_settings
 
-    return get_settings().database_url
+    # Migrations run as the schema owner, never as the runtime app role.
+    return get_settings().owner_database_url
 
 
 def run_migrations_offline() -> None:

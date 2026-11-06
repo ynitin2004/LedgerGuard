@@ -2,12 +2,12 @@
 
 A simulated payment-risk intelligence platform. Each payment is decided by a deterministic, versioned pipeline (rules + ML model + explicit policy) and written in one atomic Postgres transaction with a transactional outbox. Idempotent consumers process the events. An AI investigator, which is **advisory only**, writes evidence-grounded case summaries for analysts.
 
-> **Status: Milestone 0 (foundation).** Only the foundation exists: configuration, logging, tracing, health/readiness, migrations baseline, local infrastructure, CI. Everything else is planned. See [docs/TASKS.md](docs/TASKS.md). All data is synthetic.
+> **Status: Milestone 1 (transactions API).** Implemented: the M0 foundation plus API-key auth, `POST/GET /v1/transactions` with concurrency-safe idempotency, an append-only audit trail and RFC 9457 errors. Risk decisions arrive in M2. See [docs/TASKS.md](docs/TASKS.md). All data is synthetic.
 
 ## What this project demonstrates (target, by milestone)
 | Capability | Milestone |
 |---|---|
-| Concurrency-safe idempotency (PG unique key, no app locks) | M1 |
+| Concurrency-safe idempotency (PG unique key, no app locks): **50 concurrent same-key requests → 1 row**, [test](tests/concurrency/test_idempotency_race.py) | M1 ✅ |
 | Reproducible, versioned risk decisions (rules + LR model + policy) | M2 |
 | Transactional outbox → Redpanda → inbox-deduplicated consumers, retry/DLQ/replay | M3 |
 | LLM investigations with structured output and evidence-ID validation | M4 |
@@ -24,8 +24,17 @@ uv sync
 ./scripts/dev.ps1 migrate
 ./scripts/dev.ps1 test
 ./scripts/dev.ps1 api       # http://127.0.0.1:8000/docs
+./scripts/dev.ps1 api-client -Name demo   # prints an API key once
 ```
-Linux/macOS: the same targets via `make up`, `make migrate`, `make test`, `make api`.
+Linux/macOS: the same targets via `make up`, `make migrate`, `make test`, `make api`, `make api-client NAME=demo`.
+
+Try it (Git Bash / Linux; replace `$KEY`):
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/transactions -H "X-API-Key: $KEY" -H "Idempotency-Key: order-1" \
+  -H "content-type: application/json" \
+  -d '{"merchant_id":"m_1","merchant_category":"5411","customer_token":"cus_1","amount_minor":1250,"currency":"usd"}'
+```
+Send it twice: the second response is identical and carries `Idempotent-Replayed: true`. Change the amount but keep the key, and you get `409`.
 
 | URL | What |
 |---|---|
@@ -38,15 +47,15 @@ Linux/macOS: the same targets via `make up`, `make migrate`, `make test`, `make 
 ## Repository layout
 ```
 apps/api/                 FastAPI app factory, routers, dependency providers
-apps/worker/              worker roles (M3+)
+apps/worker/              worker entrypoint: python -m apps.worker janitor (M1); more roles M3+
 packages/ledgerguard/     core package (src layout): config, observability, infrastructure, ...
 migrations/               Alembic (async env), versions/
 rules/ policy/ models/    versioned decision assets (M2)
-tests/                    unit/, integration/ (Testcontainers)
+tests/                    unit/ (incl. Hypothesis), integration/, concurrency/ (Testcontainers)
 load/                     k6 scripts (M2+)
-infra/                    otel-collector, prometheus, grafana provisioning
+infra/                    postgres init (app role), otel-collector, prometheus, grafana provisioning
 docs/                     PRD, architecture, data model, API, ADRs, testing, security, ...
-scripts/dev.ps1           Windows task runner (mirrors Makefile)
+scripts/                  dev.ps1 (Windows task runner, mirrors Makefile), create_api_client.py
 ```
 
 ## Documentation

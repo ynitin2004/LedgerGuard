@@ -7,9 +7,12 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'env', 'install', 'up', 'down', 'down-volumes', 'ps', 'logs', 'migrate',
-                 'api', 'test', 'test-unit', 'lint', 'fmt', 'typecheck', 'check')]
-    [string]$Target = 'help'
+    [ValidateSet('help', 'env', 'install', 'up', 'down', 'down-volumes', 'ps', 'logs', 'db-role',
+                 'migrate', 'api', 'worker-janitor', 'api-client', 'test', 'test-unit', 'lint', 'fmt',
+                 'typecheck', 'check')]
+    [string]$Target = 'help',
+    # Used by api-client: ./scripts/dev.ps1 api-client -Name demo
+    [string]$Name = 'demo'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +34,7 @@ function Initialize-Env {
 
 switch ($Target) {
     'help' {
-        Write-Host 'Targets: env install up down down-volumes ps logs migrate api test test-unit lint fmt typecheck check'
+        Write-Host 'Targets: env install up down down-volumes ps logs db-role migrate api worker-janitor api-client test test-unit lint fmt typecheck check'
     }
     'env' { Initialize-Env }
     'install' { Invoke-Step uv @('sync', '--frozen') }
@@ -40,11 +43,14 @@ switch ($Target) {
     'down-volumes' { Invoke-Step docker @('compose', 'down', '-v') }
     'ps' { Invoke-Step docker @('compose', 'ps') }
     'logs' { Invoke-Step docker @('compose', 'logs', '-f', '--tail', '100') }
+    'db-role' { Initialize-Env; Invoke-Step docker @('compose', 'exec', '-T', 'postgres', 'sh', '/docker-entrypoint-initdb.d/10-app-role.sh') }
     'migrate' { Initialize-Env; Invoke-Step uv @('run', 'python', '-m', 'alembic', '-c', 'migrations/alembic.ini', 'upgrade', 'head') }
     'api' {
         Initialize-Env
         Invoke-Step uv @('run', 'python', '-m', 'uvicorn', '--factory', 'apps.api.main:create_app', '--reload', '--host', '127.0.0.1', '--port', '8000')
     }
+    'worker-janitor' { Initialize-Env; Invoke-Step uv @('run', 'python', '-m', 'apps.worker', 'janitor') }
+    'api-client' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/create_api_client.py', '--name', $Name) }
     'test' { Invoke-Step uv @('run', 'python', '-m', 'pytest') }
     'test-unit' { Invoke-Step uv @('run', 'python', '-m', 'pytest', '-m', 'not integration') }
     'lint' {

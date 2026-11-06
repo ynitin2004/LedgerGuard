@@ -1,3 +1,11 @@
 # apps/worker/
 
-**Planned (M3+).** One Python entrypoint (`python -m apps.worker <role>`) whose role is chosen on the command line: `outbox-publisher` (M3), `feature-updater` (M3), `investigator` (M4), `webhook-sender` (M5), `janitor` (M1/M3), `rag-ingest` (M7). No code exists yet by design (no placeholders).
+One entrypoint, `uv run python -m apps.worker <role>`, whose role is chosen on the command line.
+
+| Role | What | Status |
+|---|---|---|
+| `janitor` | Purge expired idempotency records in batches (`--once`, `--interval`, `--batch-size`) | **Implemented (M1)** |
+| `outbox-publisher`, `feature-updater` | Outbox → Redpanda; Redis feature windows | Planned (M3) |
+| `investigator` | LLM case summaries | Planned (M4) |
+| `webhook-sender` | Signed webhook deliveries | Planned (M5) |
+| `rag-ingest` | Corpus ingestion | Planned (M7) |

@@ -1,6 +1,7 @@
 # Architecture
 
 > **Implemented (M0):** repository layout, configuration, logging, correlation IDs, OTel export, DB engine, Alembic baseline, `/healthz`, `/readyz`, local infrastructure.
+> **Implemented (M1):** domain + application layers, SQLAlchemy repositories and Unit of Work, `/v1/transactions`, API-key auth, idempotency, audit trail, problem+json errors, least-privilege DB role, janitor worker.
 > Everything marked **Planned (Mx)** is the agreed design from Final Plan v2, not yet code.
 
 ## Style
@@ -24,10 +25,10 @@ flowchart LR
 ## Module boundaries (`packages/ledgerguard/src/ledgerguard/`)
 | Module | Responsibility | May import | Status |
 |---|---|---|---|
-| `domain/` | Pure dataclasses/enums, state machines, Money, errors | stdlib only | Planned (M1) |
+| `domain/` | Pure dataclasses/enums, state machines, Money, errors | stdlib only | **M1: transactions, canonical hashing, API keys** |
 | `risk/` | Rules (YAML, versioned), features, model registry, policy | domain | Planned (M2) |
-| `application/` | Use cases; depend on repository **protocols** | domain, risk, events | Planned (M1) |
-| `infrastructure/` | SQLAlchemy models/repositories/UoW, Redis, Kafka, LLM, auth | everything above | **M0: db engine, base, migrations, health probes** |
+| `application/` | Use cases; depend on repository **protocols** (`ports.py`) | domain, risk, events | **M1: CreateTransaction, GetTransaction, authenticate, register client, janitor purge** |
+| `infrastructure/` | SQLAlchemy models/repositories/UoW, Redis, Kafka, LLM, auth | everything above | **M0: engine, migrations, probes. M1: models, repositories, UoW** |
 | `events/` | Versioned event schemas, outbox writer, inbox dedup, consumer base | domain | Planned (M3) |
 | `investigation/` | Evidence gatherer, prompts, output schema, validator | domain, application | Planned (M4) |
 | `rag/` | Chunkers, embedder, retriever, reranker, evals | — | Planned (M7–8) |
@@ -36,8 +37,11 @@ flowchart LR
 
 Rules: `domain` never imports infrastructure. Routers call use cases only. Dependencies are wired in the app lifespan / `apps/api/deps.py` (no DI framework).
 
-## Composition root (M0)
-`apps/api/main.py:create_app()` configures logging and builds resources in the lifespan: the async engine, Redis client and readiness probes. Resources are stored on `app.state`, and `deps.py` hands them to routes. Tests inject fakes through `create_app(settings, probes=...)` instead of monkeypatching.
+## Composition root
+`apps/api/main.py:create_app()` configures logging and builds resources in the lifespan: the async engine, Unit of Work factory, use cases (M1), Redis client and readiness probes. Resources are stored on `app.state`, and `deps.py` hands them to routes. Tests inject fakes through `create_app(settings, probes=...)` instead of monkeypatching. `apps/api/problems.py` installs the RFC 9457 handlers. Workers have their own entrypoint, `python -m apps.worker <role>` (M1: `janitor`).
+
+## Unit of Work (M1)
+`SqlAlchemyUnitOfWork` is one `AsyncSession`, which means one database transaction. Repositories share its session. It is single use and rolls back on exit unless `commit()` was called, so business writes never autocommit. Use cases receive a `UnitOfWorkFactory` protocol and never see SQLAlchemy.
 
 ## Health and readiness (M0, ADR-011)
 | Endpoint | Meaning | Checks | Failure |
@@ -45,8 +49,9 @@ Rules: `domain` never imports infrastructure. Routers call use cases only. Depen
 | `/healthz` | Process alive | none | — (always 200 while the loop runs) |
 | `/readyz` | Can serve traffic correctly | Postgres reachable **and** `alembic_version` = code head (required); Redis, Redpanda (optional) | 503 if a required check fails; 200 `degraded` if only optional ones fail |
 
-## Hot path — Planned (M1–M2), target p99 < 100 ms
+## Hot path, target p99 < 100 ms
 `auth → canonical hash → UoW.begin → INSERT idempotency (PG unique PK resolves races) → features (Redis, PG fallback) → rules + model → policy → INSERT transaction, risk_decision, audit_event, outbox_event → UPDATE idempotency response → commit → 201`. No LLM and no vector search on this path.
+**Implemented in M1:** auth, canonical hash, idempotency claim, INSERT transaction, INSERT audit_event, store the response, commit (one transaction). **Planned:** features, rules, model, policy and risk_decision (M2); outbox_event (M3). Auth is one indexed lookup per request in M1; a Redis cache is a later optimisation.
 
 ## Cold path — Planned (M3–M5)
 `outbox-publisher (FOR UPDATE SKIP LOCKED, batch 100) → txn.events (key = transaction_id) → consumers`. Each consumer inserts into `consumer_inbox` and applies side effects in one Postgres transaction, then commits the offset. Transient errors go to `txn.events.retry` (exponential backoff + jitter, max 5), then `txn.events.dlq`, with a replay CLI.

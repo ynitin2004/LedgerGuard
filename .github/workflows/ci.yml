@@ -75,6 +75,22 @@ jobs:
           curl -sf http://127.0.0.1:8000/readyz | tee /tmp/readyz.json
           grep -q '"status":"ready"' /tmp/readyz.json
 
+      - name: Transactions API against the real stack (app role, idempotency)
+        run: |
+          .venv/bin/python -m uvicorn --factory apps.api.main:create_app --host 127.0.0.1 --port 8000 &
+          API_PID=$!
+          trap 'kill $API_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8000/healthz && break; sleep 1; done
+          KEY=$(.venv/bin/python scripts/create_api_client.py --name ci --key-only)
+          BODY='{"merchant_id":"m_1","merchant_category":"5411","customer_token":"cus_1","amount_minor":1250,"currency":"usd"}'
+          post() { curl -s -o /tmp/resp.json -w '%{http_code}' -X POST http://127.0.0.1:8000/v1/transactions \
+            -H "X-API-Key: $KEY" -H "Idempotency-Key: ci-1" -H 'content-type: application/json' -d "$1"; }
+          test "$(post "$BODY")" = 201 && cp /tmp/resp.json /tmp/first.json && cat /tmp/first.json
+          # Replay: same JSON document (jsonb may reorder keys, so compare parsed values).
+          test "$(post "$BODY")" = 201
+          python3 -c 'import json,sys; a,b=(json.load(open(p)) for p in sys.argv[1:]); assert a==b, (a,b)' /tmp/first.json /tmp/resp.json
+          test "$(post "${BODY/1250/999}")" = 409 && cat /tmp/resp.json
+
       - name: Service logs on failure
         if: failure()
         run: docker compose ps && docker compose logs --tail 80

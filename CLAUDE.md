@@ -9,6 +9,8 @@ The first PC had tools blocked or missing. On a new PC, before any milestone wor
    - `make` (Linux/macOS usually have it): optional. `scripts/dev.ps1` has the same targets on Windows.
    - `actionlint`: optional, lints `.github/workflows/*.yml` (`docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint`).
    - **Not** k6: it runs through the `grafana/k6` Docker image from M2 on (ADR-010). Never install `httpx2`; tests use `httpx`.
+   - Hypothesis is pinned `<6.156` because newer versions ship a compiled extension the first PC blocks (ADR-019).
+     Check that `uv run python -c "import hypothesis"` works; keep the pin while the first PC is still in use.
 3. Workarounds from the first PC. Keep them, they work everywhere: tools run as `uv run python -m <tool>`, because Windows
    Application Control blocked `.venv\Scripts\*.exe` (os error 4551, ADR-016). Host URLs use `127.0.0.1` (ADR-009).
    Postgres is on 55432, because 5432 was taken.
@@ -48,6 +50,8 @@ GitHub Actions · Next.js dashboard (M9) · AWS EC2 (M10).
 - Migrations: reviewed autogenerate, expand → contract, `upgrade`/`downgrade` round trip must pass.
 - Structured logs (structlog) with `correlation_id`; never log secrets, keys or prompts with evidence.
 - No hardcoded secrets (`.env` only, git-ignored). Use `127.0.0.1`, not `localhost`, in host URLs (ADR-009).
+- Runtime code connects as `ledgerguard_app` (`LG_DATABASE_URL`); migrations/admin as the owner. Every new table needs an
+  explicit GRANT in its migration (ADR-017). Errors are problem+json via `apps/api/problems.py`.
 - Never fabricate results: BENCHMARK.md and MODEL_CARD.md only hold numbers produced by repo scripts.
 
 ## Workflow
@@ -61,8 +65,11 @@ GitHub Actions · Next.js dashboard (M9) · AWS EC2 (M10).
 ```powershell
 uv sync                                    # install locked deps into .venv
 ./scripts/dev.ps1 up                       # docker compose up -d --wait (creates .env if missing)
-./scripts/dev.ps1 migrate                  # alembic -c migrations/alembic.ini upgrade head
+./scripts/dev.ps1 db-role                  # app-role login for volumes created before M1 (once)
+./scripts/dev.ps1 migrate                  # alembic upgrade head, as the schema owner
 ./scripts/dev.ps1 api                      # uvicorn --factory apps.api.main:create_app --reload :8000
+./scripts/dev.ps1 api-client -Name demo    # create an API client, prints its key once
+./scripts/dev.ps1 worker-janitor           # purge expired idempotency keys (loop; --once via python -m)
 ./scripts/dev.ps1 test                     # pytest (unit + Testcontainers integration; needs Docker)
 ./scripts/dev.ps1 test-unit                # pytest -m "not integration"
 ./scripts/dev.ps1 lint                     # ruff check + ruff format --check

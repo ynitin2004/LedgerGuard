@@ -90,3 +90,20 @@ The analyst role lives in `app_metadata.role` ∈ {analyst, admin}. The verifier
 **Decision.** The repository root is `C:\Users\SSIPLIT1538\Downloads\guard`. That folder is not synced by OneDrive, so the plan's reason (R2: OneDrive + Docker bind mounts) still holds.
 **Consequences.** Nothing in the code or config depends on the path. The compose project name stays `ledgerguard`, so existing data volumes are reused.
 **Finding.** Windows Application Control blocks some console-script shims (e.g. `.venv\Scripts\alembic.exe`, os error 4551) in this folder. All task runners, CI and docs therefore invoke tools as `uv run python -m <tool>`, which works on every platform.
+
+## ADR-017 Two database roles: schema owner and least-privilege runtime role
+**Context.** Plan v2 requires `audit_events` to be append-only for the application (`REVOKE UPDATE, DELETE`). A REVOKE means nothing while the API connects as the table owner.
+**Decision.** Migrations and admin scripts connect as the owner (`LG_MIGRATION_DATABASE_URL`). The API and workers connect as `ledgerguard_app` (`LG_DATABASE_URL`). Each migration grants exactly the privileges its code needs; there are no default privileges, so a new table is invisible to the app until a reviewed GRANT says otherwise. The migration creates the role `NOLOGIN` if it is missing. The login password is environment configuration (local: a Postgres init script; hosted: set once by the operator). Roles are cluster-wide, so downgrades revoke privileges but keep the role.
+**Consequences.** The audit trail, API-client table and schema are protected from app bugs and from a compromised app process, and tests prove it. One more connection string to manage. Existing local volumes need `db-role` once.
+
+## ADR-018 API error and idempotency details
+- Errors are RFC 9457 problem+json. Problem `type`s are URNs (`urn:ledgerguard:problem:<name>`): stable identifiers that don't imply a documentation URL that doesn't exist.
+- Missing/invalid `Idempotency-Key` is `422` like any other validation error, not `400`, so clients handle one validation shape.
+- Missing, unknown and revoked API keys share one `401`, so the response doesn't reveal which keys exist. Another client's transaction is `404`, not `403`.
+- The claim is a single `INSERT … ON CONFLICT DO UPDATE … WHERE expires_at <= now()`. It covers new keys, expired keys (taken over) and live keys (waits on the PK, then re-reads) without raising, so the transaction stays usable and no app lock or retry loop is needed.
+- Replays carry `Idempotent-Replayed: true` and the stored `jsonb` body. It is the same JSON document, though key order may differ.
+- Rate limiting (plan A8) is deferred to M2 together with Redis on the hot path.
+
+## ADR-019 Tooling pins forced by the primary dev PC
+- **Hypothesis `<6.156`.** Since 6.156.1 (2026-07-03) Hypothesis imports a compiled `_native` extension. Windows Application Control on the primary dev PC blocks it ("DLL load failed … Application Control policy"), the same policy as ADR-016. 6.155.x is pure Python and fully featured for our use. Revisit when this PC is no longer used.
+- **`tzdata` (dev).** Alembic's `timezone = UTC` needs the IANA database, which Windows doesn't ship; `tzdata` is the official data-only package.

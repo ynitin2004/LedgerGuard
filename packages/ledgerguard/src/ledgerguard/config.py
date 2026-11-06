@@ -24,9 +24,19 @@ class Settings(BaseSettings):
     log_format: Literal["json", "console"] = "json"
 
     # No default: the database location must always be explicit.
+    # Runtime connections use the least-privilege role (ledgerguard_app).
     database_url: str = Field(min_length=1)
+    # Schema owner, for migrations and admin scripts. Falls back to database_url.
+    migration_database_url: str | None = None
     db_pool_size: int = Field(default=10, ge=1)
     db_max_overflow: int = Field(default=10, ge=0)
+
+    # Idempotency-Key retention (plan A3). After expiry a reused key is a new request.
+    idempotency_ttl_s: int = Field(default=24 * 3600, gt=0)
+
+    @property
+    def owner_database_url(self) -> str:
+        return self.migration_database_url or self.database_url
 
     redis_url: str = "redis://127.0.0.1:6379/0"
     kafka_bootstrap_servers: str = "127.0.0.1:19092"

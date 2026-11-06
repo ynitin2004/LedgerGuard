@@ -10,15 +10,19 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from apps.api.routers import health
+from apps.api.problems import install_problem_handlers
+from apps.api.routers import health, transactions
 from ledgerguard import __version__
+from ledgerguard.application.transactions import CreateTransaction, GetTransaction
 from ledgerguard.config import Settings, get_settings
-from ledgerguard.infrastructure.db.engine import create_engine
+from ledgerguard.infrastructure.db.engine import create_engine, create_session_factory
 from ledgerguard.infrastructure.db.migrations import expected_head
+from ledgerguard.infrastructure.db.uow import SqlAlchemyUnitOfWorkFactory
 from ledgerguard.infrastructure.health import (
     Probe,
     kafka_probe,
@@ -50,6 +54,12 @@ def create_app(settings: Settings | None = None, probes: list[Probe] | None = No
             return
 
         engine = create_engine(settings)
+        uow_factory = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+        app.state.uow_factory = uow_factory
+        app.state.create_transaction = CreateTransaction(
+            uow_factory, timedelta(seconds=settings.idempotency_ttl_s)
+        )
+        app.state.get_transaction = GetTransaction(uow_factory)
         redis = Redis.from_url(
             settings.redis_url,
             socket_connect_timeout=settings.readiness_timeout_s,
@@ -72,6 +82,8 @@ def create_app(settings: Settings | None = None, probes: list[Probe] | None = No
 
     app = FastAPI(title="LedgerGuard AI", version=__version__, lifespan=lifespan)
     app.add_middleware(CorrelationIdMiddleware)
+    install_problem_handlers(app)
     app.include_router(health.router)
+    app.include_router(transactions.router)
     configure_telemetry(app, settings)
     return app

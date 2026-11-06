@@ -1,6 +1,7 @@
 # Security
 
 > **Implemented (M0):** secret hygiene, localhost-only port bindings, input validation of correlation IDs, CI without credentials.
+> **Implemented (M1):** hashed API keys, tenant-scoped reads, idempotency conflict detection, append-only audit trail via a least-privilege DB role, strict input validation, problem+json without internals.
 > Threat-model mitigations marked **Planned** arrive with the milestone shown.
 
 ## Secrets
@@ -17,10 +18,12 @@ All compose ports bind to `127.0.0.1`, so nothing is reachable from the LAN. Gra
 | Threat | Mitigation | Status |
 |---|---|---|
 | Header injection via correlation ID | Strict charset/length; otherwise replaced with a UUID | **M0, tested** |
-| Stolen API key | Hashed at rest, per-client status (revocable), rate limiting | Planned (M1, rate limit M1/M2) |
-| Cross-tenant data access | Every query scoped by `client_id`/`tenant_id`; negative tests | Planned (M1, M5) |
-| Replayed / duplicated requests | Idempotency keys scoped by client, request-hash mismatch → 409 | Planned (M1) |
-| Tampering with audit trail | Append-only tables; app role lacks UPDATE/DELETE | Planned (M1) |
+| Stolen API key | SHA-256 hash at rest (256-bit random keys, so no KDF needed), per-client status (revoked = 401, same response as unknown); rate limiting | **M1, tested**; rate limit Planned (M2) |
+| Cross-tenant data access | Every query scoped by `client_id`; another client's transaction returns the same 404 as a missing one | **M1, tested** (analyst/JWT paths M5) |
+| Replayed / duplicated requests | Idempotency keys scoped by client, request-hash mismatch → 409 | **M1, tested** |
+| Tampering with audit trail | Append-only table; runtime role `ledgerguard_app` has INSERT/SELECT only, no DDL | **M1, tested** |
+| Leaking internals in errors | problem+json; 500 bodies carry only a correlation ID; 422s echo field locations, never submitted values | **M1, tested** |
+| Money precision / type confusion | `amount_minor` must be a JSON integer (floats, strings, booleans rejected); BIGINT + CHECK in the DB | **M1, tested** |
 | Analyst privilege escalation | Supabase JWT verification (issuer, audience, expiry), role from `app_metadata` only | Planned (M5) |
 | Webhook spoofing / replay | HMAC-SHA256 over `timestamp.body`, timestamp tolerance window | Planned (M5) |
 | SSRF via webhook URLs | HTTPS only, block private/link-local ranges, no redirects | Planned (M5) |
