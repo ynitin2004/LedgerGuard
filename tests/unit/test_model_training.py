@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,12 +20,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ml_available() -> bool:
-    try:
-        import numpy  # noqa: F401
-        import sklearn  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    # Probe in a subprocess: a failed in-process `import numpy` (Windows Application Control,
+    # ADR-021) leaves a half-imported numpy in sys.modules, which makes Hypothesis try to
+    # use numpy's RNG and breaks every property test in the same run.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import numpy, sklearn"], capture_output=True, check=False
+    )
+    return probe.returncode == 0
 
 
 pytestmark = pytest.mark.skipif(not _ml_available(), reason="numpy/scikit-learn cannot load here")

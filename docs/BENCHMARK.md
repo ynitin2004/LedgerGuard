@@ -5,11 +5,39 @@ This file only ever contains numbers produced by scripts in `load/`, with the en
 ## Targets (from the plan)
 | Scenario | Target | Milestone | Status |
 |---|---|---|---|
-| `POST /v1/transactions` hot path, local | 200 RPS, p99 < 100 ms, error rate < 0.1 % | M2 (first run), M6 (suite) | **Met (M2), 3 of 3 runs** |
+| `POST /v1/transactions` hot path, local | 200 RPS, p99 < 100 ms, error rate < 0.1 % | M2 (first run), M6 (suite) | **Met (M2, M3), 3 of 3 runs each** |
+| Event pipeline: no loss, no double processing under publisher/consumer kills | reconciled counts | M3 | **Met (M3)** |
 | Retrieval baseline (tsvector) recall@6 | measured, no target | M7 | — |
 | RAG recall@6 vs baseline | improvement recorded; CI fails on > 3-pt regression | M8 | — |
 
+## Standing rule
+Every hot-path run reports **p50, p93, p97 and p99** (plus p90/p95/max), on every milestone that touches the request path.
+
 ## Results
+
+### 2026-11-16: M3 hot path, 200 RPS (outbox write + both workers running)
+| Run | Requests | RPS | Errors | **p50** | p90 | **p93** | p95 | **p97** | **p99** | max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 12,002 | 200.0 | 0 | **12.77 ms** | 19.69 | **22.11** | 24.93 | **31.54** | **55.39** | 111.13 |
+| 2 | 12,002 | 200.0 | 0 | **12.99 ms** | 19.88 | **22.33** | 24.80 | **30.75** | **51.84** | 132.48 |
+| 3 | 12,001 | 200.0 | 0 | **12.98 ms** | 19.72 | **22.19** | 25.46 | **32.81** | **56.12** | 100.03 |
+
+Same method and host as M2 (below), with `outbox-publisher` and `feature-updater` running as containers, so the hot path now also inserts the outbox event. Compared with M2, p50 rose by about 2 ms (one more insert per request) and p99 stayed within the M2 range. Every event from these runs reconciled (published and consumed exactly once). Summaries: `load/benchmarks/2026-11-16-m3/`.
+
+### 2026-11-16: M3 event pipeline drills (real compose stack)
+| Drill | What happened | Result |
+|---|---|---|
+| Chaos (`m3-chaos3`) | 200 RPS for 60 s; `SIGKILL` outbox-publisher at about 20 s (restarted 10 s later), `SIGKILL` feature-updater at about 40 s (restarted 5 s later) | API: 0 errors, p50 12.61 / p93 20.87 / p97 29.08 / p99 55.18 ms. 1,800 events queued in Postgres while the publisher was dead. Backlog of 2,155 back under 200 within 3 s of restart. **Reconciled: 36,002 outbox = 36,002 on topic = 36,002 consumed, 0 DLQ** |
+| Backlog drain, 1 replica (`m3-backlog-1`) | Consumer stopped for a 60 s load (12,001 events), then 1 replica started | **754 events/s** (12,001 in 15.9 s); reconciled |
+| Backlog drain, 3 replicas (`m3-backlog-3`) | Same, 3 replicas (`--scale feature-updater=3`) | **1,419 events/s** (12,001 in 8.5 s, including start-up and rebalance); reconciled |
+
+These are cumulative counts across the session, so each drill's reconcile covers every earlier event too. Drills were run with the procedure in `load/README.md` (script `make reconcile` / `apps.worker reconcile --strict`).
+
+**What changed to get there (same day):**
+1. The first chaos run reconciled only after about 2 minutes: the consumer did about 80–160 events/s against 200/s of inflow, so lag grew without bound. Per message it paid one thread hop to poll, one synchronous offset commit and one database transaction.
+2. Batch polling plus one offset commit per batch was not enough on its own (about 160/s).
+3. **Batch inbox** (one multi-row inbox insert, one transaction and one commit per up to 200 messages, with per-message fallback on error) brought it to 754 events/s per replica (ADR-032).
+4. The first run also stalled for about 30 s after the consumer was killed (Kafka's 45 s session timeout). With `session.timeout.ms=10000` it fails over in about 10 s.
 
 ### 2026-11-16: M2 hot path, 200 RPS (acceptance run)
 | Run | Requests | Achieved RPS | Errors | p50 | p90 | p95 | **p99** | max |

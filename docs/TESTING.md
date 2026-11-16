@@ -43,6 +43,12 @@ uv run python -m pytest -m "not integration"  # unit + property: 85 passed, 1 sk
 - `tests/concurrency/test_idempotency_race.py`: 50 concurrent identical requests → 50×201 with identical bodies, 49 `Idempotent-Replayed`, 1 transaction row, 1 audit event; 20 concurrent different bodies on one key → 1×201 + 19×409, 1 row.
 - `tests/integration/test_db_readiness.py` now round-trips `0002` too (downgrade to base, upgrade head).
 
+## M3 test inventory
+- `tests/unit/test_events.py`: envelope round trip through a Kafka message; malformed headers, unknown schema, invalid or extra fields are poison; canonical JSON; poison → DLQ; retries up to 5 then DLQ; property: backoff is bounded full jitter.
+- `tests/integration/test_outbox.py` (Postgres, in-memory broker, **runs on Windows**): the event commits with the payment and replays add none; 4 parallel publishers send each event exactly once (SKIP LOCKED); a publisher killed after send re-sends 10 of 50 events and the inbox turns 60 deliveries into 50 effects; failed deliveries stay unpublished with the error; handler failure rolls back the inbox row; batch processing dedupes within and across batches and rolls back on failure.
+- `tests/integration/test_kafka_pipeline.py` (real Redpanda + Postgres + Redis, **Linux only**): the M3 acceptance test (payments under concurrent load, publisher killed mid-batch, restarted: topic has > N messages, inbox exactly N, Redis has every payment, consumer lag metric present and back to 0); poison and exhausted retries reach the DLQ, and `replay-dlq` recovers the event.
+- Chaos and throughput drills on the real compose stack: BENCHMARK.md (M3).
+
 ## M2 test inventory
 - `tests/unit/test_risk_features.py`: half-open velocity windows, cold start, z-score rules (5 same-currency payments, cap), merchant/category/failure features; properties: counts consistent, features finite and rounded.
 - `tests/unit/test_risk_engine.py`: released rules/policy files are byte-pinned; rules drive decisions (velocity → review, repeated failures / high amount → decline, history guards); policy thresholds and clamping; invalid rule sets rejected; file name must match version; model sha256 changes with any coefficient; stable sigmoid; property: a snapshot round-tripped through JSON reproduces the outcome.
@@ -54,5 +60,6 @@ uv run python -m pytest -m "not integration"  # unit + property: 85 passed, 1 sk
 - Load (not part of pytest): `load/transactions.js` via `make load`, results in BENCHMARK.md.
 
 ## Windows notes
+- Windows Application Control on the primary PC blocks compiled wheels **inconsistently over time**: on 2026-11-16 confluent-kafka and numpy were blocked in the morning and loaded in the afternoon, while scikit-learn stayed blocked. Tests that need them skip when they cannot load, and `./scripts/dev.ps1 test-linux` always runs the complete suite (ADR-033). Last full runs: Linux 130 passed; Windows 129 passed, 1 skipped (scikit-learn).
 - Hypothesis is pinned `<6.156`: newer releases ship a compiled extension that this PC's Application Control blocks (ADR-019).
 - Testcontainers works with Docker Desktop as-is. If the Ryuk reaper fails on a machine, set `TESTCONTAINERS_RYUK_DISABLED=true` for that run only and clean up containers manually.

@@ -30,7 +30,8 @@ export const options = {
     http_req_failed: ['rate<0.01'],
     http_req_duration: ['p(99)<100'],
   },
-  summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
+  // p93 and p97 are reported on every run (standing rule, BENCHMARK.md).
+  summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(93)', 'p(95)', 'p(97)', 'p(99)', 'max'],
 };
 
 function pick(n) {

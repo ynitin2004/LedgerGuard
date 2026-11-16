@@ -27,7 +27,9 @@ from ledgerguard.application.ports import (
 )
 from ledgerguard.domain.idempotency import request_hash
 from ledgerguard.domain.transactions import NewTransaction, Transaction
+from ledgerguard.events.schemas import Envelope, TransactionEvaluatedV1
 from ledgerguard.observability.logging import get_logger
+from ledgerguard.risk.engine import RiskOutcome
 from ledgerguard.risk.features import (
     VELOCITY_1H,
     PaymentAttempt,
@@ -101,6 +103,40 @@ def decision_view(d: StoredRiskDecision) -> dict[str, Any]:
         "evidence_refs": d.evidence_refs,
         "created_at": d.created_at.isoformat(),
     }
+
+
+def evaluated_event(
+    client: ApiClient,
+    txn: Transaction,
+    outcome: RiskOutcome,
+    decision_id: UUID,
+    correlation_id: str | None,
+) -> Envelope:
+    payload = TransactionEvaluatedV1(
+        transaction_id=txn.id,
+        client_id=client.id,
+        customer_token=txn.customer_token,
+        merchant_id=txn.merchant_id,
+        merchant_category=txn.merchant_category,
+        amount_minor=txn.amount_minor,
+        currency=txn.currency,
+        status=txn.status.value,
+        decision=outcome.decision.value,
+        risk_score=f"{Decimal(str(outcome.score)):.5f}",
+        reason_codes=outcome.reason_codes,
+        policy_version=outcome.policy_version,
+        risk_decision_id=decision_id,
+        created_at=txn.created_at,
+    )
+    return Envelope(
+        event_id=uuid4(),
+        event_type="transaction.evaluated",
+        schema_version=1,
+        # Kafka key: per-transaction ordering (plan s.4).
+        aggregate_id=str(txn.id),
+        payload=payload.model_dump(mode="json"),
+        correlation_id=correlation_id,
+    )
 
 
 class CreateTransaction:
@@ -180,6 +216,12 @@ class CreateTransaction:
                         "policy_version": outcome.policy_version,
                     },
                 )
+            )
+            # Transactional outbox (M3): the event commits or rolls back with the payment,
+            # so there is never a payment without its event or an event without a payment.
+            await uow.outbox.add(
+                evaluated_event(client, txn, outcome, decision_id, correlation_id),
+                aggregate_type="transaction",
             )
             body = transaction_view(txn, outcome.reason_codes)
             await uow.idempotency.complete(

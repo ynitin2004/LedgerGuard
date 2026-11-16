@@ -1,7 +1,7 @@
 # LedgerGuard AI task runner (Linux/macOS/CI/EC2).
 # Windows equivalent with identical targets: ./scripts/dev.ps1 <target>
 .DEFAULT_GOAL := help
-.PHONY: help env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions bench-up load test test-unit lint fmt typecheck check
+.PHONY: help env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions image bench-up workers-up reconcile replay-dlq load test test-linux test-unit lint fmt typecheck check
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -54,15 +54,30 @@ seed: env  ## Seed 30 days of synthetic history for a new client: make seed NAME
 verify-decisions: env  ## Replay every stored decision; fails on any mismatch
 	uv run python scripts/verify_decisions.py
 
-bench-up: env  ## Build and start the containerised API (4 workers) on 127.0.0.1:8001
-	docker build -f infra/api/Dockerfile -t ledgerguard-api:local .
-	docker compose --profile bench up -d --no-build --wait api
+image:  ## Build the app image (API + workers)
+	docker build -f infra/api/Dockerfile -t ledgerguard-app:local .
+
+bench-up: env image  ## Containerised API (4 workers) on 127.0.0.1:8001 + event workers
+	docker compose --profile bench up -d --no-build --wait api outbox-publisher feature-updater
+
+workers-up: env image  ## Start the event workers (outbox-publisher, feature-updater)
+	docker compose --profile workers up -d --no-build outbox-publisher feature-updater
+
+reconcile: env  ## Outbox vs topic vs inbox counts (fails if not reconciled)
+	docker compose --profile workers run --rm --no-deps feature-updater /opt/venv/bin/python -m apps.worker reconcile --strict
+
+replay-dlq: env  ## Replay dead-lettered events: make replay-dlq EVENT=<id>  (or EVENT=all)
+	docker compose --profile workers run --rm --no-deps feature-updater /opt/venv/bin/python -m apps.worker replay-dlq $(if $(filter all,$(EVENT)),--all,--event-id $(EVENT))
 
 load: env  ## k6 hot-path load test: LOAD_API_KEY=<key from make seed> make load
 	docker compose --profile bench run --rm --no-deps k6 run --summary-export /load/results/latest.json /load/transactions.js
 
 test:  ## All tests (integration tests need Docker)
 	uv run python -m pytest
+
+test-linux:  ## Full test suite inside Linux (hosts where Kafka/numpy wheels cannot load)
+	docker build -q -t ledgerguard-ml:local infra/ml
+	docker run --rm -v "$$PWD:/repo" -v ledgerguard-uv-cache:/root/.cache/uv -v /var/run/docker.sock:/var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true ledgerguard-ml:local uv run --frozen python -m pytest -p no:cacheprovider
 
 test-unit:  ## Unit tests only (no Docker)
 	uv run python -m pytest -m "not integration"

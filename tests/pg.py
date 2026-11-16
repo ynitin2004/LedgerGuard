@@ -31,7 +31,7 @@ REDIS_IMAGE = "redis:7.4-alpine"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = REPO_ROOT / "migrations" / "alembic.ini"
 MODEL_ARTIFACT = REPO_ROOT / "models" / "lr-v1.json"
-APP_ROLE_PASSWORD = "app_test"  # noqa: S105 - throwaway test container
+APP_ROLE_PASSWORD = "app_test"
 
 
 @dataclass(frozen=True)

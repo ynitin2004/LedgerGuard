@@ -9,13 +9,16 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'install', 'up', 'down', 'down-volumes', 'ps', 'logs', 'db-role',
                  'migrate', 'api', 'worker-janitor', 'api-client', 'train', 'register-model', 'seed',
-                 'verify-decisions', 'bench-up', 'load', 'test', 'test-unit', 'lint', 'fmt',
+                 'verify-decisions', 'image', 'bench-up', 'workers-up', 'reconcile', 'replay-dlq', 'load',
+                 'test', 'test-linux', 'test-unit', 'lint', 'fmt',
                  'typecheck', 'check')]
     [string]$Target = 'help',
     # Used by api-client and seed: ./scripts/dev.ps1 seed -Name demo
     [string]$Name = 'demo',
     # Used by load: ./scripts/dev.ps1 load -ApiKey <key printed by seed>
-    [string]$ApiKey = ''
+    [string]$ApiKey = '',
+    # Used by replay-dlq: ./scripts/dev.ps1 replay-dlq -EventId <id> (or all)
+    [string]$EventId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,7 +40,7 @@ function Initialize-Env {
 
 switch ($Target) {
     'help' {
-        Write-Host 'Targets: env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions bench-up load test test-unit lint fmt typecheck check'
+        Write-Host 'Targets: env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions image bench-up workers-up reconcile replay-dlq load test test-linux test-unit lint fmt typecheck check'
     }
     'env' { Initialize-Env }
     'install' { Invoke-Step uv @('sync', '--frozen') }
@@ -63,10 +66,26 @@ switch ($Target) {
     'register-model' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/register_model.py', 'models/lr-v1.json', '--activate') }
     'seed' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/seed_history.py', '--name', $Name) }
     'verify-decisions' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/verify_decisions.py') }
+    'image' { Invoke-Step docker @('build', '-f', 'infra/api/Dockerfile', '-t', 'ledgerguard-app:local', '.') }
     'bench-up' {
         Initialize-Env
-        Invoke-Step docker @('build', '-f', 'infra/api/Dockerfile', '-t', 'ledgerguard-api:local', '.')
-        Invoke-Step docker @('compose', '--profile', 'bench', 'up', '-d', '--no-build', '--wait', 'api')
+        Invoke-Step docker @('build', '-f', 'infra/api/Dockerfile', '-t', 'ledgerguard-app:local', '.')
+        Invoke-Step docker @('compose', '--profile', 'bench', 'up', '-d', '--no-build', '--wait', 'api', 'outbox-publisher', 'feature-updater')
+    }
+    'workers-up' {
+        Initialize-Env
+        Invoke-Step docker @('build', '-f', 'infra/api/Dockerfile', '-t', 'ledgerguard-app:local', '.')
+        Invoke-Step docker @('compose', '--profile', 'workers', 'up', '-d', '--no-build', 'outbox-publisher', 'feature-updater')
+    }
+    'reconcile' {
+        Invoke-Step docker @('compose', '--profile', 'workers', 'run', '--rm', '--no-deps', 'feature-updater',
+            '/opt/venv/bin/python', '-m', 'apps.worker', 'reconcile', '--strict')
+    }
+    'replay-dlq' {
+        if (-not $EventId) { throw 'Pass -EventId <id> or -EventId all' }
+        $target = if ($EventId -eq 'all') { @('--all') } else { @('--event-id', $EventId) }
+        Invoke-Step docker (@('compose', '--profile', 'workers', 'run', '--rm', '--no-deps', 'feature-updater',
+            '/opt/venv/bin/python', '-m', 'apps.worker', 'replay-dlq') + $target)
     }
     'load' {
         if (-not $ApiKey) { throw 'Pass -ApiKey <key printed by ./scripts/dev.ps1 seed>' }
@@ -75,6 +94,13 @@ switch ($Target) {
             '--summary-export', '/load/results/latest.json', '/load/transactions.js')
     }
     'test' { Invoke-Step uv @('run', 'python', '-m', 'pytest') }
+    'test-linux' {
+        # Kafka and numpy cannot load on this PC: run the whole suite in Linux (ADR-033).
+        Invoke-Step docker @('build', '-q', '-t', 'ledgerguard-ml:local', 'infra/ml')
+        Invoke-Step docker @('run', '--rm', '-v', "${PWD}:/repo", '-v', 'ledgerguard-uv-cache:/root/.cache/uv',
+            '-v', '/var/run/docker.sock:/var/run/docker.sock', '-e', 'TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal',
+            '-e', 'TESTCONTAINERS_RYUK_DISABLED=true', 'ledgerguard-ml:local', 'uv', 'run', '--frozen', 'python', '-m', 'pytest', '-p', 'no:cacheprovider')
+    }
     'test-unit' { Invoke-Step uv @('run', 'python', '-m', 'pytest', '-m', 'not integration') }
     'lint' {
         Invoke-Step uv @('run', 'python', '-m', 'ruff', 'check', '.')

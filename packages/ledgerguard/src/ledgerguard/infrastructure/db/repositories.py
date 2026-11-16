@@ -17,6 +17,8 @@ from ledgerguard.application.ports import (
     ClaimResult,
     CustomerHistory,
     IdempotencyRecord,
+    OutboxBacklog,
+    OutboxMessage,
     RiskDecisionRecord,
     StoredRiskDecision,
 )
@@ -26,11 +28,14 @@ from ledgerguard.domain.transactions import (
     Transaction,
     TransactionStatus,
 )
+from ledgerguard.events.schemas import Envelope
 from ledgerguard.infrastructure.db.models import (
     ApiClientRow,
     AuditEventRow,
+    ConsumerInboxRow,
     IdempotencyRecordRow,
     ModelRegistryRow,
+    OutboxEventRow,
     RiskDecisionRow,
     TransactionRow,
 )
@@ -379,3 +384,102 @@ class SqlAuditRepository:
                 metadata_=event.metadata,
             )
         )
+
+
+class SqlOutboxRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, envelope: Envelope, *, aggregate_type: str) -> None:
+        await self._session.execute(
+            pg_insert(OutboxEventRow).values(
+                event_id=envelope.event_id,
+                aggregate_type=aggregate_type,
+                aggregate_id=envelope.aggregate_id,
+                event_type=envelope.event_type,
+                schema_version=envelope.schema_version,
+                payload=envelope.payload,
+                correlation_id=envelope.correlation_id,
+            )
+        )
+
+    async def claim_batch(self, limit: int) -> list[OutboxMessage]:
+        t = OutboxEventRow
+        rows = await self._session.scalars(
+            select(t)
+            .where(t.published_at.is_(None))
+            .order_by(t.created_at, t.event_id)
+            .limit(limit)
+            # Several publishers can run: each claims a disjoint set of rows.
+            .with_for_update(skip_locked=True)
+        )
+        return [
+            OutboxMessage(
+                envelope=Envelope(
+                    event_id=r.event_id,
+                    event_type=r.event_type,
+                    schema_version=r.schema_version,
+                    aggregate_id=r.aggregate_id,
+                    payload=r.payload,
+                    correlation_id=r.correlation_id,
+                ),
+                attempt_count=r.attempt_count,
+            )
+            for r in rows
+        ]
+
+    async def mark_published(self, event_ids: list[UUID]) -> None:
+        if not event_ids:
+            return
+        await self._session.execute(
+            update(OutboxEventRow)
+            .where(OutboxEventRow.event_id.in_(event_ids))
+            .values(published_at=func.now(), attempt_count=OutboxEventRow.attempt_count + 1)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def mark_failed(self, event_id: UUID, error: str) -> None:
+        await self._session.execute(
+            update(OutboxEventRow)
+            .where(OutboxEventRow.event_id == event_id)
+            .values(attempt_count=OutboxEventRow.attempt_count + 1, last_error=error[:1000])
+            .execution_options(synchronize_session=False)
+        )
+
+    async def backlog(self) -> OutboxBacklog:
+        t = OutboxEventRow
+        row = (
+            await self._session.execute(
+                select(
+                    func.count(),
+                    func.extract("epoch", func.now() - func.min(t.created_at)),
+                ).where(t.published_at.is_(None))
+            )
+        ).one()
+        oldest = float(row[1]) if row[1] is not None else None
+        return OutboxBacklog(unpublished=int(row[0]), oldest_age_s=oldest)
+
+
+class SqlInboxRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(self, consumer_name: str, event_id: UUID) -> bool:
+        inserted = await self._session.scalar(
+            pg_insert(ConsumerInboxRow)
+            .values(consumer_name=consumer_name, event_id=event_id)
+            .on_conflict_do_nothing(index_elements=["consumer_name", "event_id"])
+            .returning(ConsumerInboxRow.event_id)
+        )
+        return inserted is not None
+
+    async def record_many(self, consumer_name: str, event_ids: list[UUID]) -> set[UUID]:
+        if not event_ids:
+            return set()
+        rows = await self._session.scalars(
+            pg_insert(ConsumerInboxRow)
+            .values([{"consumer_name": consumer_name, "event_id": e} for e in event_ids])
+            .on_conflict_do_nothing(index_elements=["consumer_name", "event_id"])
+            .returning(ConsumerInboxRow.event_id)
+        )
+        return set(rows.all())

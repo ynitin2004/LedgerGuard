@@ -146,8 +146,8 @@ services:
     build:
       context: .
       dockerfile: infra/api/Dockerfile
-    image: ledgerguard-api:local
-    environment:
+    image: ledgerguard-app:local
+    environment: &app-env
       LG_ENV: local
       LG_LOG_FORMAT: json
       LG_DATABASE_URL: postgresql+asyncpg://ledgerguard_app:${POSTGRES_APP_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
@@ -161,6 +161,40 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # --- Event workers (M3): `docker compose --profile workers up -d` ------------
+  # Same image as the API; confluent-kafka only loads in Linux on the dev PC (ADR-022).
+  outbox-publisher:
+    profiles: ["workers", "bench"]
+    image: ledgerguard-app:local
+    command: ["/opt/venv/bin/python", "-m", "apps.worker", "outbox-publisher"]
+    environment: *app-env
+    # No HTTP server: the image healthcheck (GET /healthz) does not apply.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  feature-updater:
+    profiles: ["workers", "bench"]
+    image: ledgerguard-app:local
+    command: ["/opt/venv/bin/python", "-m", "apps.worker", "feature-updater"]
+    environment: *app-env
+    # No HTTP server: the image healthcheck (GET /healthz) does not apply.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
         condition: service_healthy
 
   k6:

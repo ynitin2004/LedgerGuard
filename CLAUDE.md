@@ -58,6 +58,8 @@ GitHub Actions · Next.js dashboard (M9) · AWS EC2 (M10).
 - Risk assets are immutable once released: change rules/policy => new `v<x.y>.yaml`; new model => new `vN` (ADR-020).
   `risk/` stays pure; features come from one function shared by serving, training and replay.
 - Never fabricate results: BENCHMARK.md and MODEL_CARD.md only hold numbers produced by repo scripts.
+- Every benchmark reports **p50, p93, p97, p99** (user's standing rule). Events are at-least-once: every consumer
+  handler must be idempotent and go through the inbox (`process_batch`/`process_once`).
 
 ## Workflow
 1. Read the relevant docs and the TASKS.md item; restate the task and acceptance before coding.
@@ -80,6 +82,10 @@ uv sync                                    # install locked deps into .venv
 ./scripts/dev.ps1 verify-decisions         # replay every stored decision; fails on any mismatch
 ./scripts/dev.ps1 bench-up                 # API in a Linux container (4 workers) on 127.0.0.1:8001
 ./scripts/dev.ps1 load -ApiKey <key>       # k6 200 RPS / 60 s against the bench API (ADR-022)
+./scripts/dev.ps1 workers-up               # outbox-publisher + feature-updater containers (Kafka, M3)
+./scripts/dev.ps1 reconcile                # outbox vs topic vs inbox counts; fails unless exactly-once
+./scripts/dev.ps1 replay-dlq -EventId <id> # re-send a dead-lettered event (or -EventId all)
+./scripts/dev.ps1 test-linux               # FULL suite in Linux (Kafka + sklearn tests skip on this PC)
 ./scripts/dev.ps1 worker-janitor           # purge expired idempotency keys (loop; --once via python -m)
 ./scripts/dev.ps1 test                     # pytest (unit + Testcontainers integration; needs Docker)
 ./scripts/dev.ps1 test-unit                # pytest -m "not integration"

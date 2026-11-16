@@ -97,10 +97,19 @@ jobs:
       - name: Stored decisions replay exactly
         run: make verify-decisions
 
+      - name: Event pipeline (outbox -> Redpanda -> feature-updater) reconciles
+        # Builds the app image, starts both workers, and waits until every outbox event
+        # from the smoke requests above is published and consumed exactly once.
+        run: |
+          make workers-up
+          for i in $(seq 1 45); do make reconcile >/tmp/reconcile.txt 2>&1 && break; sleep 2; done
+          cat /tmp/reconcile.txt
+          grep -q RECONCILED: /tmp/reconcile.txt
+
       - name: Service logs on failure
         if: failure()
-        run: docker compose ps && docker compose logs --tail 80
+        run: docker compose --profile workers ps && docker compose --profile workers logs --tail 80
 
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose --profile bench down -v

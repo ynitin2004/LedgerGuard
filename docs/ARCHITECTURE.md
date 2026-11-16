@@ -2,6 +2,7 @@
 
 > **Implemented (M0):** repository layout, configuration, logging, correlation IDs, OTel export, DB engine, Alembic baseline, `/healthz`, `/readyz`, local infrastructure.
 > **Implemented (M1):** domain + application layers, SQLAlchemy repositories and Unit of Work, `/v1/transactions`, API-key auth, idempotency, audit trail, problem+json errors, least-privilege DB role, janitor worker.
+> **Implemented (M3):** transactional outbox, outbox publisher (SKIP LOCKED), `txn.events` + retry + DLQ topics, consumer base with inbox dedup and batch processing, feature-updater, DLQ replay, reconcile command, consumer-lag and outbox-backlog metrics, workers in containers.
 > **Implemented (M2):** `risk/` (features, rules, LR scoring, policy, engine), synthetic generator, Redis velocity windows with a Postgres fallback, model registry, decision per transaction in the same DB transaction, decisions endpoint, rate limiting, replay verification, containerised benchmark.
 > Everything marked **Planned (Mx)** is the agreed design from Final Plan v2, not yet code.
 
@@ -30,7 +31,7 @@ flowchart LR
 | `risk/` | Features, rules, LR scoring, policy, engine, dataset builder (pure) | domain | **M2: implemented** |
 | `application/` | Use cases; depend on repository **protocols** (`ports.py`) | domain, risk, events | **M1: CreateTransaction, GetTransaction, authenticate, register client, janitor purge** |
 | `infrastructure/` | SQLAlchemy models/repositories/UoW, Redis, Kafka, LLM, auth | everything above | **M0: engine, migrations, probes. M1: models, repositories, UoW** |
-| `events/` | Versioned event schemas, outbox writer, inbox dedup, consumer base | domain | Planned (M3) |
+| `events/` | Versioned event schemas, envelope, retry/DLQ routing (pure) | — | **M3: implemented** (publisher/consumer use cases in `application/events.py`, Kafka adapter in `infrastructure/kafka.py`, worker loops in `apps/worker/events.py`) |
 | `investigation/` | Evidence gatherer, prompts, output schema, validator | domain, application | Planned (M4) |
 | `rag/` | Chunkers, embedder, retriever, reranker, evals | — | Planned (M7–8) |
 | `observability/` | structlog, correlation IDs, OTel | — | **M0: implemented** |
@@ -52,7 +53,7 @@ Rules: `domain` never imports infrastructure. Routers call use cases only. Depen
 
 ## Hot path, target p99 < 100 ms
 `auth → canonical hash → UoW.begin → INSERT idempotency (PG unique PK resolves races) → features (Redis, PG fallback) → rules + model → policy → INSERT transaction, risk_decision, audit_event, outbox_event → UPDATE idempotency response → commit → 201`. No LLM and no vector search on this path.
-**Implemented (M2):** auth (cached in-process, ADR-024), rate limit (Redis, fail-open), canonical hash, idempotency claim (returns the DB clock), customer history (one indexed query), velocity (Redis windows or the same history, ADR-023), features, rules, model, policy, then INSERT transaction (born `evaluated` with its decision), risk_decision and audit_event, store the response, and commit. The Redis window is updated after commit. **Planned:** outbox_event in the same transaction (M3).
+**Implemented (M2):** auth (cached in-process, ADR-024), rate limit (Redis, fail-open), canonical hash, idempotency claim (returns the DB clock), customer history (one indexed query), velocity (Redis windows or the same history, ADR-023), features, rules, model, policy, then INSERT transaction (born `evaluated` with its decision), risk_decision and audit_event, store the response, and commit. The Redis window is updated after commit. **M3:** the outbox event is inserted in the same transaction (about +2 ms at p50).
 Measured: 200 RPS with p99 42–59 ms (BENCHMARK.md).
 
 ## Risk decisioning (M2)
@@ -72,7 +73,17 @@ flowchart LR
 - The engine is an immutable `(rules, model, policy)` triple. `RiskEngineProvider` loads rules and policy from files and the active model from `model_registry`, lazily. A missing model makes `/readyz` 503 and `POST` 503 without writing anything; registering one makes the running API ready.
 - Training (`scripts/train_model.py`) happens offline on synthetic data. The artifact is JSON, registered with its sha256 (ADR-020/021).
 
-## Cold path — Planned (M3–M5)
+## Cold path (M3 implemented; consumers M4–M5 planned)
+```mermaid
+flowchart LR
+  api[API hot path] -->|same DB txn| ob[(outbox_events)]
+  ob -->|SKIP LOCKED batches, N publishers| pub[outbox-publisher]
+  pub -->|idempotent producer, key=txn id| t[[txn.events x6]]
+  t --> fu[feature-updater group<br/>batch inbox, 1-6 replicas] --> r[(Redis windows)]
+  fu -. failure .-> rt[[txn.events.retry]] -. backoff .-> fu
+  rt -. attempts exhausted / poison .-> dlq[[txn.events.dlq]] -. replay-dlq .-> rt
+```
+
 `outbox-publisher (FOR UPDATE SKIP LOCKED, batch 100) → txn.events (key = transaction_id) → consumers`. Each consumer inserts into `consumer_inbox` and applies side effects in one Postgres transaction, then commits the offset. Transient errors go to `txn.events.retry` (exponential backoff + jitter, max 5), then `txn.events.dlq`, with a replay CLI.
 
 ## Local infrastructure (M0, `docker-compose.yml`)

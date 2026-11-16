@@ -12,4 +12,5 @@ Windows: `./scripts/dev.ps1 seed -Name k6`, `./scripts/dev.ps1 bench-up`, `./scr
 
 - `transactions.js`: `POST /v1/transactions` at a constant arrival rate, with thresholds p99 < 100 ms and errors < 1%.
 - `results/`: scratch output (git-ignored).
+- M3 event drills (stack with `make bench-up`): run a load while `docker compose kill -s SIGKILL outbox-publisher` (and/or `feature-updater`), restart with `docker compose --profile bench start <service>`, then `make reconcile`. For drain rate: stop `feature-updater`, run a 60 s load, start N replicas with `docker compose --profile bench up -d --no-build --scale feature-updater=N feature-updater`, and time until lag is 0.
 - `benchmarks/<date>-<milestone>/`: k6 summaries behind every number in docs/BENCHMARK.md.

@@ -1,6 +1,7 @@
 # Observability
 
 > **Implemented (M0):** structured JSON logs with correlation IDs, OTel traces + HTTP metrics exported to the collector, Prometheus scraping, and a provisioned Grafana datasource.
+> **Implemented (M3):** `ledgerguard_consumer_lag{consumer,topic,partition}`, `ledgerguard_outbox_backlog`, `ledgerguard_outbox_oldest_age_seconds` gauges (OTLP from the workers → collector → Prometheus); worker logs `outbox.backlog`, `consumer.retry_scheduled`, `consumer.dead_lettered`, `consumer.batch_fallback`, `consumer.duplicates_skipped`.
 > **Planned (M6):** dashboards, alerts, stage-level latency, and a trace backend.
 
 ## Pipeline (ADR-012)

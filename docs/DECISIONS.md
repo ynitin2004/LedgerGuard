@@ -141,3 +141,46 @@ The analyst role lives in `app_metadata.role` ∈ {analyst, admin}. The verifier
 
 ## ADR-025 Rate limiting: fixed one-second window per client, fail-open
 Moved from the M1 backlog. `INCR lg:rl:{client}:{epoch_second}` + `EXPIRE 2` in one pipeline. Above `LG_RATE_LIMIT_PER_SECOND` (default 1000; 0 disables) the API returns `429` problem+json with `Retry-After: 1`. Redis errors allow the request (plan A8: fail-open), with a warning log; M6 adds the alert. A fixed window allows up to 2× the limit across a second boundary, which is acceptable for abuse protection; it is not billing-grade metering.
+
+## Proposed for M6: scaling Postgres and the platform (user request 2026-11-16)
+These are **proposals**. Each is decided in M6 with a load test that shows the limit first, then the fix (BENCHMARK.md). The API and workers already scale horizontally because they hold no state; Postgres is the shared resource that eventually limits the system.
+
+### ADR-026 (Proposed) Connection pooling with PgBouncer
+**Problem.** Each API worker opens up to `db_pool_size + db_max_overflow` = 20 connections. 5 instances × 4 workers could open 400, but Postgres defaults to `max_connections = 100`, and every idle connection costs server memory. This is the first wall when adding replicas.
+**Proposal.** PgBouncer in transaction-pooling mode between the services and Postgres; app pools shrink to a few connections per worker. Check asyncpg prepared-statement caching against transaction pooling (`statement_cache_size=0` or PgBouncer ≥ 1.21 prepared-statement support).
+**Prove it.** A k6 run with many API replicas that exhausts connections without PgBouncer and holds p99 with it.
+
+### ADR-027 (Proposed) Time-partition `transactions`, `risk_decisions`, `audit_events`, `outbox_events`
+**Problem.** These tables only grow. Index depth and vacuum cost rise with size, and deleting old rows is expensive.
+**Proposal.** Native declarative partitioning by month on `created_at` (pg_partman or a migration helper creates future partitions). Hot-path queries already filter on recent time windows, so partition pruning applies. Retention becomes `DETACH`/`DROP PARTITION` instead of `DELETE`. Primary keys must include `created_at`, so FK targets need a design review.
+**Prove it.** Insert and history-query latency at 10× the current data volume, with and without partitions.
+
+### ADR-028 (Proposed) Read replicas for read-heavy endpoints
+**Problem.** Analyst queues (M5), decision history and dashboards compete with the write path on the primary.
+**Proposal.** Route `GET` analyst/decision reads to a replica through a second engine (`LG_DATABASE_READ_URL`). The hot path and anything that must see its own writes stays on the primary. Document the replication-lag semantics per endpoint.
+**Prove it.** Mixed read/write k6 profile: primary CPU and write p99 with and without the replica.
+
+### ADR-029 (Proposed) Autoscaling signals and Kafka partition strategy
+**Problem.** Scaling is manual (ECS is documented only, M10). Consumer parallelism is capped by the partition count of `txn.events`.
+**Proposal.** Scale the API on CPU/p99 and consumers on **consumer lag** (M3 metric) and outbox backlog age. Choose the partition count for the target consumer parallelism (start: 6) and document re-partitioning cost: keys move, so ordering per key holds only within a partition generation.
+**Prove it.** A lag-driven scale-out drill: double the load, add consumers, lag returns to its baseline within N minutes.
+
+### ADR-030 (Proposed) Out of scope: multi-region and sharding
+**Decision to record.** One region, one primary. State the limits measured in M6, what would trigger sharding (e.g. sustained write load beyond one primary's measured ceiling), and the likely shard key (`client_id`, since every query is tenant-scoped).
+
+## ADR-031 Velocity windows: API fast-path write + feature-updater as the reliable writer
+**Context.** M2 records each payment in its Redis window right after commit (best effort). The plan's M3 moves feature updates to a consumer of `txn.events`. If the consumer were the *only* writer, windows would lag behind by the consumer lag, and a burst inside that lag would be under-counted.
+**Decision.** Keep both. The API records immediately after commit (fresh windows). The `feature-updater` consumes `transaction.evaluated` and records again (at-least-once, survives API crashes and Redis blips). `ZADD` of the same member is idempotent, so the double write cannot double-count.
+**Consequences.** Closes the ADR-023 gap ("write failed and invalidate failed → under-count until TTL"): the event repairs the window. Costs one extra Redis write per payment in the background.
+
+## ADR-032 Event pipeline design (outbox, publisher, consumers, retry, DLQ)
+- **Outbox** row in the payment's transaction. **Publisher:** `SELECT … FOR UPDATE SKIP LOCKED LIMIT 100` → produce (idempotent producer, `acks=all`) → wait for acks → mark `published_at` → commit. A crash between ack and commit re-sends (duplicates by design). Any number of publishers can run in parallel.
+- **Topic** `txn.events`: 6 partitions, key = transaction id (plan s.4). `txn.events.retry` (6) and `txn.events.dlq` (1).
+- **Consumers:** manual offset commits only after processing. Each consumer runs **two groups**, `<name>` (main topic) and `<name>.retry` (retry topic), so waiting out one retry's backoff never blocks fresh events. Retry messages carry `target_consumer`, `attempt`, `retry_at` and `error` headers, so several consumers can share one retry topic.
+- **Failure routing:** poison (bad headers, unknown schema/version, invalid body) → DLQ immediately. Other errors → retry with full-jitter exponential backoff (1 s base, 60 s cap), at most 5 attempts → DLQ. **Replay** (`apps.worker replay-dlq`) reads the DLQ with a throwaway group and re-sends to the retry topic for the original consumer.
+- **Batch inbox (throughput):** the main loop polls up to 200 messages and processes them in **one database transaction**: one multi-row `INSERT … ON CONFLICT DO NOTHING RETURNING` identifies new events, the handler runs for those, one commit, then one offset commit. On any error the batch rolls back and is re-handled one message at a time, isolating the bad one. Handlers must be idempotent. Measured: 754 events/s per replica, against about 80–160 per replica with per-message transactions and commits (BENCHMARK.md).
+- **Failover:** `session.timeout.ms=10000` (default 45 s). A killed consumer's partitions move within about 10 s instead of stalling for about 30 s, as observed in the first chaos run.
+- **Schemas:** `transaction.evaluated` v1 (Pydantic, `extra=forbid`). Versions are immutable; additive change ships as v2 next to v1.
+
+## ADR-033 Run the complete test suite in Linux from the Windows dev PC
+`make test-linux` / `./scripts/dev.ps1 test-linux` run pytest inside the pinned `infra/ml` image with the Docker socket mounted (`TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`, Ryuk disabled). This is the only way to run the Kafka and scikit-learn tests on the primary PC (ADR-021/022). CI runs them natively on Linux.

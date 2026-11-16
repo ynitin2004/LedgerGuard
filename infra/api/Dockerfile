@@ -1,4 +1,4 @@
-# API image for local benchmarks and Linux-only dependencies (M2). Runs on Linux, where
+# App image (API + event workers) for local benchmarks and Linux-only dependencies (M2/M3). Runs on Linux, where
 # uvicorn's multi-worker mode and compiled wheels work (ADR-022). The production image
 # (non-root, hardened, built in CI) is M10. Build context: repository root.
 FROM ghcr.io/astral-sh/uv:0.11.29 AS uv

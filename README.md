@@ -2,7 +2,7 @@
 
 A simulated payment-risk intelligence platform. Each payment is decided by a deterministic, versioned pipeline (rules + ML model + explicit policy) and written in one atomic Postgres transaction with a transactional outbox. Idempotent consumers process the events. An AI investigator, which is **advisory only**, writes evidence-grounded case summaries for analysts.
 
-> **Status: Milestone 2 (risk decisioning).** Every payment is decided in the same database transaction by versioned rules + a logistic-regression model + an explicit policy, and every decision can be replayed exactly. Builds on M0/M1: API-key auth, concurrency-safe idempotency, append-only audit trail, RFC 9457 errors. All data is synthetic. See [docs/TASKS.md](docs/TASKS.md). All data is synthetic.
+> **Status: Milestone 3 (event backbone)**: every decision also emits an event through a transactional outbox to Redpanda; consumers process each event exactly once, even when publishers and consumers are killed under load. Previously, **Milestone 2 (risk decisioning)**: Every payment is decided in the same database transaction by versioned rules + a logistic-regression model + an explicit policy, and every decision can be replayed exactly. Builds on M0/M1: API-key auth, concurrency-safe idempotency, append-only audit trail, RFC 9457 errors. All data is synthetic. See [docs/TASKS.md](docs/TASKS.md). All data is synthetic.
 
 ## What this project demonstrates (target, by milestone)
 | Capability | Milestone |
@@ -10,7 +10,7 @@ A simulated payment-risk intelligence platform. Each payment is decided by a det
 | Concurrency-safe idempotency (PG unique key, no app locks): **50 concurrent same-key requests → 1 row**, [test](tests/concurrency/test_idempotency_race.py) | M1 ✅ |
 | Reproducible, versioned risk decisions (rules + LR model + policy): **143,464 of 143,464 replayed exactly** ([script](scripts/verify_decisions.py)); PR-AUC 0.536 on held-out synthetic data ([model card](docs/MODEL_CARD.md)) | M2 ✅ |
 | Hot path at **200 RPS, p99 42–59 ms** over 3 runs ([k6 script](load/transactions.js), [results](docs/BENCHMARK.md)) | M2 ✅ |
-| Transactional outbox → Redpanda → inbox-deduplicated consumers, retry/DLQ/replay | M3 |
+| Transactional outbox → Redpanda → inbox-deduplicated consumers, retry/DLQ/replay: **publisher and consumer SIGKILLed under 200 RPS, 36,002 events reconciled exactly**; consumer 754 → 1,419 events/s from 1 → 3 replicas ([results](docs/BENCHMARK.md)) | M3 ✅ |
 | LLM investigations with structured output and evidence-ID validation | M4 |
 | Analyst auth (Supabase JWT), signed webhooks with backoff | M5 |
 | Failure matrix tests, k6 load results, Grafana dashboards → `v0.1.0` | M6 |

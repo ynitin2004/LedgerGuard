@@ -193,3 +193,46 @@ class ModelRegistryRow(Base):
     artifact_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     active: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = _created_at()
+
+
+class OutboxEventRow(Base):
+    """Transactional outbox (plan s.6): written in the same transaction as the business row.
+
+    The publisher sends unpublished rows in creation order and stamps ``published_at``
+    after the broker acknowledges them. A crash between the two re-sends the row: that
+    duplicate is expected, and consumers deduplicate it by ``event_id``.
+    """
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index(
+            "ix_outbox_events_unpublished",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+        ),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    aggregate_type: Mapped[str] = mapped_column(Text, nullable=False)
+    aggregate_id: Mapped[str] = mapped_column(Text, nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = _created_at()
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ConsumerInboxRow(Base):
+    """Per-consumer dedup record, inserted in the consumer's transaction with its effects."""
+
+    __tablename__ = "consumer_inbox"
+    __table_args__ = (PrimaryKeyConstraint("consumer_name", "event_id"),)
+
+    consumer_name: Mapped[str] = mapped_column(Text, nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -24,6 +24,20 @@ from ledgerguard.config import Settings
 _EXCLUDED_URLS = "healthz,readyz"
 
 
+def configure_process_telemetry(settings: Settings, service_name: str) -> MeterProvider | None:
+    """Metrics export for non-HTTP processes (workers): gauges such as consumer lag."""
+    if not settings.otel_enabled:
+        return None
+    endpoint = settings.otel_exporter_otlp_endpoint.rstrip("/")
+    resource = Resource.create({SERVICE_NAME: service_name, "deployment.environment": settings.env})
+    reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint=f"{endpoint}/v1/metrics"), export_interval_millis=10_000
+    )
+    meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
+    metrics.set_meter_provider(meter_provider)
+    return meter_provider
+
+
 def configure_telemetry(app: FastAPI, settings: Settings) -> None:
     if not settings.otel_enabled:
         return

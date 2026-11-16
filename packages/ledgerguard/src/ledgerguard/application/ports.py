@@ -13,6 +13,7 @@ from typing import Any, Protocol, Self
 from uuid import UUID
 
 from ledgerguard.domain.transactions import NewTransaction, Transaction
+from ledgerguard.events.schemas import Envelope
 from ledgerguard.risk.engine import RiskEngine, RiskOutcome
 from ledgerguard.risk.features import FeatureSnapshot, HistoryItem, VelocityCounts
 from ledgerguard.risk.model import LogisticModel
@@ -161,6 +162,42 @@ class VelocityStore(Protocol):
     async def invalidate(self, client_id: UUID, customer_token: str) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class OutboxMessage:
+    envelope: Envelope
+    attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxBacklog:
+    unpublished: int
+    oldest_age_s: float | None
+
+
+class OutboxRepository(Protocol):
+    async def add(self, envelope: Envelope, *, aggregate_type: str) -> None: ...
+
+    async def claim_batch(self, limit: int) -> list[OutboxMessage]:
+        """Oldest unpublished rows, locked FOR UPDATE SKIP LOCKED (parallel publishers)."""
+        ...
+
+    async def mark_published(self, event_ids: list[UUID]) -> None: ...
+
+    async def mark_failed(self, event_id: UUID, error: str) -> None: ...
+
+    async def backlog(self) -> OutboxBacklog: ...
+
+
+class InboxRepository(Protocol):
+    async def record(self, consumer_name: str, event_id: UUID) -> bool:
+        """True the first time this consumer sees the event; False for a duplicate."""
+        ...
+
+    async def record_many(self, consumer_name: str, event_ids: list[UUID]) -> set[UUID]:
+        """Record a batch in one statement; returns the ids seen for the first time."""
+        ...
+
+
 class RiskEngineSource(Protocol):
     async def current(self) -> RiskEngine:
         """The engine for new decisions; raises RiskEngineUnavailableError if none."""
@@ -215,6 +252,12 @@ class UnitOfWork(Protocol):
 
     @property
     def models(self) -> ModelRegistryRepository: ...
+
+    @property
+    def outbox(self) -> OutboxRepository: ...
+
+    @property
+    def inbox(self) -> InboxRepository: ...
 
     async def commit(self) -> None: ...
 
