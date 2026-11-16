@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,16 +16,21 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.redis import RedisContainer
 
 from apps.api.main import create_app
 from ledgerguard.application.api_clients import IssuedApiKey, register_api_client
 from ledgerguard.infrastructure.db.engine import create_session_factory
 from ledgerguard.infrastructure.db.migrations import alembic_config
 from ledgerguard.infrastructure.db.uow import SqlAlchemyUnitOfWorkFactory
+from ledgerguard.infrastructure.risk_assets import load_model_file
 from tests.helpers import make_settings
 
 POSTGRES_IMAGE = "pgvector/pgvector:0.8.0-pg16"
-ALEMBIC_INI = Path(__file__).resolve().parents[1] / "migrations" / "alembic.ini"
+REDIS_IMAGE = "redis:7.4-alpine"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ALEMBIC_INI = REPO_ROOT / "migrations" / "alembic.ini"
+MODEL_ARTIFACT = REPO_ROOT / "models" / "lr-v1.json"
 APP_ROLE_PASSWORD = "app_test"  # noqa: S105 - throwaway test container
 
 
@@ -67,8 +73,26 @@ async def new_client(db: Database, name: str = "test") -> IssuedApiKey:
         await engine.dispose()
 
 
+async def register_model(
+    db: Database, path: Path = MODEL_ARTIFACT, *, activate: bool = True
+) -> None:
+    """Register (and activate) a model artifact, as scripts/register_model.py does."""
+    model = load_model_file(path)
+    engine = create_async_engine(db.owner_url)
+    try:
+        factory = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+        async with factory() as uow:
+            await uow.models.register(
+                model, artifact_path=path.name, trained_at=datetime.now(UTC), activate=activate
+            )
+            await uow.commit()
+    finally:
+        await engine.dispose()
+
+
 @contextmanager
-def migrated_database() -> Iterator[Database]:
+def migrated_database(*, with_model: bool = True) -> Iterator[Database]:
+    """Fresh Postgres at head; by default model v1 is registered and active."""
     with PostgresContainer(POSTGRES_IMAGE, driver="asyncpg") as pg:
         owner_url = _ipv4(pg.get_connection_url())
         migrate(owner_url)
@@ -81,7 +105,17 @@ def migrated_database() -> Iterator[Database]:
         asyncio.run(
             owner_query(db, f"ALTER ROLE ledgerguard_app LOGIN PASSWORD '{APP_ROLE_PASSWORD}'")
         )
+        if with_model:
+            asyncio.run(register_model(db))
         yield db
+
+
+@contextmanager
+def redis_server() -> Iterator[str]:
+    """A throwaway Redis (same image as compose); yields its URL."""
+    with RedisContainer(REDIS_IMAGE) as redis:
+        host = redis.get_container_host_ip().replace("localhost", "127.0.0.1")
+        yield f"redis://{host}:{redis.get_exposed_port(6379)}/0"
 
 
 @asynccontextmanager
@@ -91,6 +125,7 @@ async def api_client(db: Database, **overrides: Any) -> AsyncIterator[httpx.Asyn
         database_url=db.app_url,
         migration_database_url=db.owner_url,
         alembic_ini_path=ALEMBIC_INI,
+        risk_assets_dir=REPO_ROOT,
         **overrides,
     )
     app = create_app(settings)

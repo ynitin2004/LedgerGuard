@@ -30,9 +30,28 @@ class Settings(BaseSettings):
     migration_database_url: str | None = None
     db_pool_size: int = Field(default=10, ge=1)
     db_max_overflow: int = Field(default=10, ge=0)
+    # Upper bounds so a stalled query or an exhausted pool fails fast (retryable via the
+    # Idempotency-Key) instead of hanging the request.
+    db_command_timeout_s: float = Field(default=5.0, gt=0)
+    db_pool_timeout_s: float = Field(default=5.0, gt=0)
 
     # Idempotency-Key retention (plan A3). After expiry a reused key is a new request.
     idempotency_ttl_s: int = Field(default=24 * 3600, gt=0)
+
+    # Risk assets (M2): rules/v<rules_version>.yaml and policy/v<policy_version>.yaml under
+    # risk_assets_dir; the model is the active row in model_registry.
+    risk_assets_dir: Path = Path(".")
+    rules_version: str = "1.0"
+    policy_version: str = "1.0"
+
+    # Hot-path Redis (velocity windows, rate limit): tight timeout, no retries; any
+    # failure degrades instead of waiting (plan A8).
+    redis_timeout_s: float = Field(default=0.05, gt=0)
+    # Successful API-key lookups are cached per process this long; 0 disables. A revoked
+    # key keeps working for at most this many seconds (SECURITY.md).
+    api_key_cache_ttl_s: float = Field(default=10.0, ge=0)
+    # Requests per second per API client; 0 disables. Fails open when Redis is down.
+    rate_limit_per_second: int = Field(default=1000, ge=0)
 
     @property
     def owner_database_url(self) -> str:

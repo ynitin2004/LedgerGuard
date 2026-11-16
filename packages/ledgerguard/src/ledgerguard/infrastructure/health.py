@@ -21,6 +21,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ledgerguard.application.ports import RiskEngineSource
+
 ProbeFn = Callable[[], Awaitable[str | None]]
 """A probe returns optional detail on success and raises on failure."""
 
@@ -97,6 +99,15 @@ def redis_probe(client: Redis) -> Probe:
         return None
 
     return Probe("redis", check, required=False)
+
+
+def risk_engine_probe(engines: RiskEngineSource) -> Probe:
+    """Required: without rules, policy and an active model the API cannot decide."""
+
+    async def check() -> str | None:
+        return (await engines.current()).policy_version
+
+    return Probe("risk_engine", check, required=True)
 
 
 def kafka_probe(bootstrap_servers: str, timeout_s: float) -> Probe:

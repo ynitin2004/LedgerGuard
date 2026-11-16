@@ -138,6 +138,45 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # --- Benchmark profile (M2): `docker compose --profile bench ...` -------------
+  # The API in a Linux container (4 workers) and k6 on the same network, so the load
+  # test measures the service rather than Windows port forwarding (ADR-022).
+  api:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: infra/api/Dockerfile
+    image: ledgerguard-api:local
+    environment:
+      LG_ENV: local
+      LG_LOG_FORMAT: json
+      LG_DATABASE_URL: postgresql+asyncpg://ledgerguard_app:${POSTGRES_APP_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+      LG_REDIS_URL: redis://redis:6379/0
+      LG_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      LG_OTEL_ENABLED: "true"
+      LG_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "127.0.0.1:${API_CONTAINER_HOST_PORT:-8001}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  k6:
+    profiles: ["bench"]
+    image: grafana/k6:1.7.0
+    environment:
+      BASE_URL: http://api:8000
+      API_KEY: ${LOAD_API_KEY:-}
+      RATE: ${LOAD_RATE:-200}
+      DURATION: ${LOAD_DURATION:-60s}
+    volumes:
+      - ./load:/load
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   pg_data:
   redis_data:

@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ledgerguard.application.ports import RiskEngineUnavailableError
 from ledgerguard.application.transactions import (
     IdempotencyKeyReusedError,
     TransactionNotFoundError,
@@ -161,6 +162,18 @@ async def _invalid_transaction(request: Request, exc: Exception) -> JSONResponse
     )
 
 
+async def _engine_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    log.error("risk_engine.unavailable", error=str(exc))
+    return problem_response(
+        request,
+        status=503,
+        problem_type=URN + "risk-engine-unavailable",
+        title="Risk engine unavailable",
+        detail="No decision can be made right now; retry later with the same Idempotency-Key.",
+        headers={"Retry-After": "5"},
+    )
+
+
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     log.exception("api.unhandled_error", path=request.url.path)
     # No exception text in the response: it may contain internals.
@@ -174,4 +187,5 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(IdempotencyKeyReusedError, _idempotency_conflict)
     app.add_exception_handler(TransactionNotFoundError, _not_found)
     app.add_exception_handler(InvalidTransactionError, _invalid_transaction)
+    app.add_exception_handler(RiskEngineUnavailableError, _engine_unavailable)
     app.add_exception_handler(Exception, _unhandled)

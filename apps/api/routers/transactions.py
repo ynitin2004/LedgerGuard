@@ -10,10 +10,15 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from apps.api.deps import get_create_transaction, get_current_client, get_get_transaction
+from apps.api.deps import (
+    get_create_transaction,
+    get_get_transaction,
+    get_list_decisions,
+    rate_limited_client,
+)
 from apps.api.problems import Problem
 from ledgerguard.application.ports import ApiClient
-from ledgerguard.application.transactions import CreateTransaction, GetTransaction
+from ledgerguard.application.transactions import CreateTransaction, GetTransaction, ListDecisions
 from ledgerguard.domain.transactions import MAX_AMOUNT_MINOR, NewTransaction
 
 router = APIRouter(prefix="/v1/transactions", tags=["transactions"])
@@ -59,14 +64,32 @@ class TransactionResponse(BaseModel):
     amount_minor: int
     currency: str
     decision: Literal["approve", "decline", "review"] | None
-    risk_score: str | None
+    risk_score: str | None = Field(description="Combined score, exact 5-decimal string")
+    reason_codes: list[str]
     policy_version: str | None
+    created_at: datetime
+
+
+class DecisionResponse(BaseModel):
+    id: UUID
+    transaction_id: UUID
+    decision: Literal["approve", "decline", "review"]
+    score: str
+    model_score: str
+    reason_codes: list[str]
+    rules_version: str
+    model_version: str
+    thresholds_version: str
+    policy_version: str
+    feature_snapshot: dict[str, float]
+    evidence_refs: list[str]
     created_at: datetime
 
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
     401: {"model": Problem, "description": "Missing or invalid API key"},
     422: {"model": Problem, "description": "Validation failed"},
+    429: {"model": Problem, "description": "Per-client rate limit exceeded"},
 }
 
 
@@ -77,6 +100,7 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
     responses={
         **_ERRORS,
         409: {"model": Problem, "description": "Idempotency-Key reused with a different body"},
+        503: {"model": Problem, "description": "Risk engine unavailable (e.g. no active model)"},
     },
 )
 async def create_transaction(
@@ -91,7 +115,7 @@ async def create_transaction(
             "return the original response for 24 h.",
         ),
     ],
-    client: Annotated[ApiClient, Depends(get_current_client)],
+    client: Annotated[ApiClient, Depends(rate_limited_client)],
     create: Annotated[CreateTransaction, Depends(get_create_transaction)],
 ) -> JSONResponse:
     result = await create(
@@ -111,7 +135,21 @@ async def create_transaction(
 )
 async def get_transaction(
     transaction_id: UUID,
-    client: Annotated[ApiClient, Depends(get_current_client)],
+    client: Annotated[ApiClient, Depends(rate_limited_client)],
     get: Annotated[GetTransaction, Depends(get_get_transaction)],
 ) -> JSONResponse:
     return JSONResponse(await get(client=client, transaction_id=transaction_id))
+
+
+@router.get(
+    "/{transaction_id}/decisions",
+    response_model=list[DecisionResponse],
+    responses={**_ERRORS, 404: {"model": Problem, "description": "Not found for this client"}},
+)
+async def list_decisions(
+    transaction_id: UUID,
+    client: Annotated[ApiClient, Depends(rate_limited_client)],
+    list_for: Annotated[ListDecisions, Depends(get_list_decisions)],
+) -> JSONResponse:
+    """Decision history, oldest first, with versions, reason codes and feature snapshots."""
+    return JSONResponse(await list_for(client=client, transaction_id=transaction_id))

@@ -1,0 +1,7 @@
+# Decision thresholds 1.0 (the "thresholds" part of policy_version). Immutable once released.
+# combined = clamp(model_score + sum of soft rule weights, 0, 1)
+# decline: any hard rule, or combined >= decline_threshold
+# review:  any soft rule, or combined >= review_threshold
+version: "1.0"
+review_threshold: 0.30
+decline_threshold: 0.80

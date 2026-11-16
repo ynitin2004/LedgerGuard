@@ -63,10 +63,12 @@ def test_create_then_get(db: Database) -> None:
             assert resp.status_code == 201, resp.text
             assert "idempotent-replayed" not in resp.headers
             created = resp.json()
-            assert created["status"] == "created"
+            assert created["status"] == "evaluated"  # decided in the same transaction (M2)
             assert created["currency"] == "USD"  # normalised
             assert created["amount_minor"] == 1250
-            assert created["decision"] is None  # risk evaluation arrives in M2
+            assert created["decision"] == "approve"  # first payment, ordinary amount
+            assert created["policy_version"] == "rules@1.0+model@v1+thresholds@1.0"
+            assert created["reason_codes"] == []
 
             fetched = await http.get(
                 f"/v1/transactions/{created['id']}", headers=headers(issued.raw_key)
@@ -90,7 +92,9 @@ def test_create_then_get(db: Database) -> None:
         assert actor == f"api_client:{issued.client.id}"
         assert action == "transaction.created"
         assert correlation_id == "corr-1"
-        assert metadata == {"idempotency_key": "k-1"}
+        assert metadata["idempotency_key"] == "k-1"
+        assert metadata["decision"] == "approve"
+        assert metadata["policy_version"] == created["policy_version"]
         record = await owner_query(
             db,
             "SELECT response_status, response_body, expires_at - created_at "
@@ -281,6 +285,12 @@ def test_expired_key_is_treated_as_new_and_janitor_purges(db: Database) -> None:
         "INSERT INTO api_clients (tenant_id, name, key_hash) "
         "VALUES (gen_random_uuid(), 'x', repeat('a', 64))",
         "CREATE TABLE sneaky (id int)",
+        # M2: decisions are append-only; only admins register or activate models.
+        "UPDATE risk_decisions SET decision = 'approve'",
+        "DELETE FROM risk_decisions",
+        "UPDATE model_registry SET active = false",
+        "INSERT INTO model_registry (model_version, algo, trained_at, metrics, artifact_path, "
+        "artifact, artifact_sha256) VALUES ('v9', 'x', now(), '{}', 'x', '{}', repeat('a', 64))",
     ],
 )
 def test_app_role_cannot_tamper(db: Database, statement: str) -> None:

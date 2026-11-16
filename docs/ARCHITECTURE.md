@@ -2,6 +2,7 @@
 
 > **Implemented (M0):** repository layout, configuration, logging, correlation IDs, OTel export, DB engine, Alembic baseline, `/healthz`, `/readyz`, local infrastructure.
 > **Implemented (M1):** domain + application layers, SQLAlchemy repositories and Unit of Work, `/v1/transactions`, API-key auth, idempotency, audit trail, problem+json errors, least-privilege DB role, janitor worker.
+> **Implemented (M2):** `risk/` (features, rules, LR scoring, policy, engine), synthetic generator, Redis velocity windows with a Postgres fallback, model registry, decision per transaction in the same DB transaction, decisions endpoint, rate limiting, replay verification, containerised benchmark.
 > Everything marked **Planned (Mx)** is the agreed design from Final Plan v2, not yet code.
 
 ## Style
@@ -26,7 +27,7 @@ flowchart LR
 | Module | Responsibility | May import | Status |
 |---|---|---|---|
 | `domain/` | Pure dataclasses/enums, state machines, Money, errors | stdlib only | **M1: transactions, canonical hashing, API keys** |
-| `risk/` | Rules (YAML, versioned), features, model registry, policy | domain | Planned (M2) |
+| `risk/` | Features, rules, LR scoring, policy, engine, dataset builder (pure) | domain | **M2: implemented** |
 | `application/` | Use cases; depend on repository **protocols** (`ports.py`) | domain, risk, events | **M1: CreateTransaction, GetTransaction, authenticate, register client, janitor purge** |
 | `infrastructure/` | SQLAlchemy models/repositories/UoW, Redis, Kafka, LLM, auth | everything above | **M0: engine, migrations, probes. M1: models, repositories, UoW** |
 | `events/` | Versioned event schemas, outbox writer, inbox dedup, consumer base | domain | Planned (M3) |
@@ -51,7 +52,25 @@ Rules: `domain` never imports infrastructure. Routers call use cases only. Depen
 
 ## Hot path, target p99 < 100 ms
 `auth → canonical hash → UoW.begin → INSERT idempotency (PG unique PK resolves races) → features (Redis, PG fallback) → rules + model → policy → INSERT transaction, risk_decision, audit_event, outbox_event → UPDATE idempotency response → commit → 201`. No LLM and no vector search on this path.
-**Implemented in M1:** auth, canonical hash, idempotency claim, INSERT transaction, INSERT audit_event, store the response, commit (one transaction). **Planned:** features, rules, model, policy and risk_decision (M2); outbox_event (M3). Auth is one indexed lookup per request in M1; a Redis cache is a later optimisation.
+**Implemented (M2):** auth (cached in-process, ADR-024), rate limit (Redis, fail-open), canonical hash, idempotency claim (returns the DB clock), customer history (one indexed query), velocity (Redis windows or the same history, ADR-023), features, rules, model, policy, then INSERT transaction (born `evaluated` with its decision), risk_decision and audit_event, store the response, and commit. The Redis window is updated after commit. **Planned:** outbox_event in the same transaction (M3).
+Measured: 200 RPS with p99 42–59 ms (BENCHMARK.md).
+
+## Risk decisioning (M2)
+```mermaid
+flowchart LR
+  hist[(30-day history<br/>Postgres)] --> feat[compute_features]
+  vel[(velocity windows<br/>Redis, PG fallback)] --> feat
+  feat --> snap[feature_snapshot]
+  snap --> rules[rules v1.0<br/>YAML]
+  snap --> model[LR model v1<br/>JSON, pure Python]
+  rules --> pol[policy v1.0<br/>thresholds]
+  model --> pol
+  pol --> dec[decision + score + reason codes]
+  snap & dec --> rd[(risk_decisions<br/>append-only)]
+```
+- One pure function computes features for serving, training (`risk/dataset.py`) and replay, so they cannot diverge.
+- The engine is an immutable `(rules, model, policy)` triple. `RiskEngineProvider` loads rules and policy from files and the active model from `model_registry`, lazily. A missing model makes `/readyz` 503 and `POST` 503 without writing anything; registering one makes the running API ready.
+- Training (`scripts/train_model.py`) happens offline on synthetic data. The artifact is JSON, registered with its sha256 (ADR-020/021).
 
 ## Cold path — Planned (M3–M5)
 `outbox-publisher (FOR UPDATE SKIP LOCKED, batch 100) → txn.events (key = transaction_id) → consumers`. Each consumer inserts into `consumer_inbox` and applies side effects in one Postgres transaction, then commits the offset. Transient errors go to `txn.events.retry` (exponential backoff + jitter, max 5), then `txn.events.dlq`, with a replay CLI.

@@ -11,6 +11,8 @@ from ledgerguard.infrastructure.db.repositories import (
     SqlApiClientRepository,
     SqlAuditRepository,
     SqlIdempotencyRepository,
+    SqlModelRegistryRepository,
+    SqlRiskDecisionRepository,
     SqlTransactionRepository,
 )
 
@@ -25,6 +27,8 @@ class SqlAlchemyUnitOfWork:
         self.transactions = SqlTransactionRepository(self._session)
         self.idempotency = SqlIdempotencyRepository(self._session)
         self.audit = SqlAuditRepository(self._session)
+        self.risk_decisions = SqlRiskDecisionRepository(self._session)
+        self.models = SqlModelRegistryRepository(self._session)
 
     async def commit(self) -> None:
         await self._session.commit()

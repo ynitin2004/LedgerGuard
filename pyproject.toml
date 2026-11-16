@@ -7,6 +7,9 @@ dependencies = ["ledgerguard"]
 
 [tool.uv]
 package = false
+# ml: training only (scripts/train_model.py, CI). The API never imports numpy/sklearn;
+# Windows Application Control blocks numpy on the primary dev PC (ADR-021).
+default-groups = ["dev", "ml"]
 
 [tool.uv.workspace]
 members = ["packages/ledgerguard"]
@@ -25,6 +28,11 @@ dev = [
     # <6.156: 6.156.1+ ships a compiled extension that Windows Application Control blocks
     # on the primary dev PC (see the one-time section in CLAUDE.md). 6.155.x is pure Python.
     "hypothesis>=6.155,<6.156",
+    "types-pyyaml>=6.0.12.20261113",
+]
+ml = [
+    "numpy>=2.5.5",
+    "scikit-learn>=1.9.1",
 ]
 
 # ---------------------------------------------------------------- ruff
@@ -51,7 +59,7 @@ mypy_path = ["packages/ledgerguard/src", "."]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["confluent_kafka.*", "testcontainers.*"]
+module = ["confluent_kafka.*", "testcontainers.*", "sklearn.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest

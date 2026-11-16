@@ -107,3 +107,37 @@ The analyst role lives in `app_metadata.role` ∈ {analyst, admin}. The verifier
 ## ADR-019 Tooling pins forced by the primary dev PC
 - **Hypothesis `<6.156`.** Since 6.156.1 (2026-07-03) Hypothesis imports a compiled `_native` extension. Windows Application Control on the primary dev PC blocks it ("DLL load failed … Application Control policy"), the same policy as ADR-016. 6.155.x is pure Python and fully featured for our use. Revisit when this PC is no longer used.
 - **`tzdata` (dev).** Alembic's `timezone = UTC` needs the IANA database, which Windows doesn't ship; `tzdata` is the official data-only package.
+
+## ADR-020 Rules as data, model as JSON, everything versioned
+**Context.** Plan s.7 needs reproducible decisions: the same snapshot + versions must give the same answer forever.
+**Decision.**
+- Rules are YAML data (`rules/v<version>.yaml`): `feature <op> value` conditions, all of which must hold. There is no expression language and no `eval`, so a rules file cannot run code. Policy thresholds live in `policy/v<version>.yaml`. The file name must equal the declared version, and released files are pinned by SHA-256 in a test, so editing a released version fails CI.
+- The model is exported as JSON (standardisation, coefficients, intercept, metrics) and stored whole in `model_registry.artifact` with its sha256. The API scores it in pure Python. There is no pickle (no code execution on load) and no numpy at runtime.
+- Scores are rounded to 5 decimals *before* the policy compares them, which is the precision stored in `numeric(6,5)`. Stored values therefore re-derive the same decision exactly.
+**Consequences.** `scripts/verify_decisions.py` can prove that every stored decision reproduces (143,464 of 143,464 did). Changing anything means a new version file or model version.
+
+## ADR-021 Model training runs where numpy can load
+**Context.** On the primary dev PC, Windows Application Control blocks numpy's compiled core ("DLL load failed … Application Control policy"), so scikit-learn cannot run there. Same class of block as ADR-016/019.
+**Decision.** Training needs numpy only offline. `make train` runs natively on Linux/macOS/CI; `./scripts/dev.ps1 train` runs the same script in a pinned Linux image (`infra/ml/Dockerfile`: uv 0.11.29 on python:3.12.10-slim-bookworm). numpy and scikit-learn are a separate `ml` dependency group. It is a default group so mypy sees numpy's types, but the API never imports it. The scikit-learn parity and reproducibility test skips where numpy cannot load and runs in CI.
+**Consequences.** No production dependency on numerical libraries. Training is reproducible from any machine with Docker.
+
+## ADR-022 Benchmark the API in a Linux container
+**Context.** Plan acceptance for M2 is 200 RPS with p99 < 100 ms. One uvicorn process tops out near 100 RPS (about 10 ms of Python per request), so several workers are needed. On Windows, uvicorn workers sometimes fail `listen()` on the shared socket (`OSError [WinError 10022]`), and orphaned workers keep accepting connections after their parent dies. In one run that made 25 requests hang.
+**Decision.** Benchmarks run the API from `infra/api/Dockerfile` (uvicorn, 4 workers) in compose profile `bench`, with k6 on the same Docker network (`make bench-up`, `make load`). Production is Linux (M10), so this is also the representative setup. The image is a dev/bench image; M10 hardens it.
+**Consequences.** Benchmark numbers exclude Docker Desktop port forwarding. The containerised API also runs Linux-only wheels (confluent-kafka is now blocked on the dev PC too), which M3 workers can reuse.
+
+## ADR-023 Redis velocity windows with a Postgres fallback (plan A8)
+**Context.** The plan keeps velocity features in Redis with Postgres as the fallback. The user confirmed this in M2 over a Postgres-only alternative.
+**Decision.**
+- One sorted set per (client, customer): member = transaction id, score = exact integer epoch microseconds. Window bounds are computed in Python; the Lua script does no arithmetic, because its 14-digit number formatting would round timestamps. Windows are half-open, `now - w < t <= now`, exactly like `velocity_from_history`, and `now` is the transaction's database timestamp.
+- A window is trusted only if it contains a `!ready` marker. A miss computes velocity from the Postgres history (which the other features read anyway) and rebuilds the window with ZADD, a union. Each commit ZADDs the payment after commit. Because both are unions, a rebuild racing a commit never loses the payment.
+- If a post-commit write fails, the window is deleted so the next read rebuilds it. If Redis is unreachable, reads fall back to Postgres. The Redis client has a 50 ms timeout and **no retries**: redis-py 8 defaults to 10 retries with backoff, which would turn an outage into slow requests.
+**Consequences.** With Redis down, features are identical and tested (`test_redis_down_gives_the_same_features_as_redis_up`), just slower. Known gap: if a write fails *and* the following delete also fails while reads still succeed, a window under-counts until its TTL (65 min). M3's outbox-driven feature-updater makes the writes at-least-once.
+
+## ADR-024 In-process cache for API-key lookups
+**Context.** Authenticating every request cost a separate database transaction (4 round trips), the largest single item in the hot path.
+**Decision.** Successful lookups are cached per process for `LG_API_KEY_CACHE_TTL_S` (default 10 s). The cache is keyed by the key's SHA-256 (never the raw key) and LRU-bounded at 10,000 entries. Misses are never cached, so random invalid keys cannot fill it. Set the TTL to 0 to disable.
+**Consequences.** Revoking a key takes up to 10 s to apply in each API process (documented in SECURITY.md). Together with `now()` returned by the idempotency claim, this removed about 5 round trips per request; p99 at 200 RPS went from 49–156 ms to 42–59 ms.
+
+## ADR-025 Rate limiting: fixed one-second window per client, fail-open
+Moved from the M1 backlog. `INCR lg:rl:{client}:{epoch_second}` + `EXPIRE 2` in one pipeline. Above `LG_RATE_LIMIT_PER_SECOND` (default 1000; 0 disables) the API returns `429` problem+json with `Retry-After: 1`. Redis errors allow the request (plan A8: fail-open), with a warning log; M6 adds the alert. A fixed window allows up to 2× the limit across a second boundary, which is acceptable for abuse protection; it is not billing-grade metering.

@@ -2,6 +2,7 @@
 
 > **Implemented:** M0 `GET /healthz`, `GET /readyz`, correlation-ID header, OpenAPI at `/docs` and `/openapi.json`.
 > M1 `POST /v1/transactions`, `GET /v1/transactions/{id}`, API-key auth, idempotency, RFC 9457 errors.
+> M2 risk decision on every `POST`, `GET /v1/transactions/{id}/decisions`, rate limiting (`429`), `503` when no risk engine is available.
 > Endpoints under **Planned** are the agreed contract, not yet code.
 
 ## Conventions
@@ -31,7 +32,7 @@
 ### Authentication (M1)
 `X-API-Key: lg_...` on every `/v1` request. Missing, unknown and revoked keys all get the same `401` problem (`urn:ledgerguard:problem:unauthenticated`, `WWW-Authenticate: ApiKey`). Keys are created with `scripts/create_api_client.py` and stored only as SHA-256 hashes.
 
-### `POST /v1/transactions` (M1; risk decision added in M2)
+### `POST /v1/transactions` (M1; evaluated by the risk engine since M2)
 Headers: `X-API-Key`, `Idempotency-Key` (required, 1–255 printable ASCII characters, no spaces).
 ```json
 {"merchant_id": "m_42", "merchant_category": "5411", "customer_token": "cus_abc", "amount_minor": 1250, "currency": "usd"}
@@ -51,22 +52,38 @@ Unknown fields are rejected.
 | `401` | Missing / invalid / revoked API key |
 | `409` | `urn:ledgerguard:problem:idempotency-key-reused`: same key, different body |
 | `422` | `urn:ledgerguard:problem:validation-error`, including a missing or malformed `Idempotency-Key` |
+| `429` | `urn:ledgerguard:problem:rate-limited`, `Retry-After: 1` (per-client requests per second) |
+| `503` | `urn:ledgerguard:problem:risk-engine-unavailable`, `Retry-After: 5` (e.g. no active model). Nothing is written, so retry with the same key |
 
-Response (M1: `status` is `created`; `decision`, `risk_score` and `policy_version` stay `null` until M2):
+Response. The payment is evaluated in the same database transaction, so `status` is `evaluated` and `decision` is always set (M2):
 ```json
-{"id": "700e9dbd-…", "status": "created", "merchant_id": "m_42", "merchant_category": "5411", "customer_token": "cus_abc",
- "amount_minor": 1250, "currency": "USD", "decision": null, "risk_score": null, "policy_version": null,
- "created_at": "2026-11-06T05:00:39.249303+00:00"}
+{"id": "700e9dbd-…", "status": "evaluated", "merchant_id": "m_42", "merchant_category": "5411", "customer_token": "cus_abc",
+ "amount_minor": 1250, "currency": "USD", "decision": "review", "risk_score": "0.35002", "reason_codes": ["VELOCITY_5M"],
+ "policy_version": "rules@1.0+model@v1+thresholds@1.0", "created_at": "2026-11-16T08:20:39.249303+00:00"}
 ```
+`risk_score` is the combined score as an exact 5-decimal string. `reason_codes` lists the rule codes that fired. A replayed response is the stored original, decision included.
 
 ### `GET /v1/transactions/{id}` (M1)
 Same body as above. `404` (`urn:ledgerguard:problem:transaction-not-found`) when the id does not exist **or belongs to another client**; the two cases are indistinguishable.
 
+### `GET /v1/transactions/{id}/decisions` (M2)
+Decision history for one transaction, oldest first. Decisions are never modified: an analyst override (M5) adds a row. `404` rules as above.
+```json
+[{"id": "92e5a229-…", "transaction_id": "700e9dbd-…", "decision": "review", "score": "0.35002", "model_score": "0.00002",
+  "reason_codes": ["VELOCITY_5M"], "rules_version": "1.0", "model_version": "v1", "thresholds_version": "1.0",
+  "policy_version": "rules@1.0+model@v1+thresholds@1.0",
+  "feature_snapshot": {"amount_minor": 300, "log_amount": 5.70711, "velocity_5m": 4, "velocity_1h": 4, "history_count_30d": 4,
+                       "amount_zscore": 0.0, "is_new_merchant": 0, "category_share_30d": 1.0, "failed_24h": 0},
+  "evidence_refs": ["92e5a229-…:VELOCITY_5M"], "created_at": "…"}]
+```
+`feature_snapshot` plus the three versions reproduce `decision`, `score` and `model_score` exactly (`scripts/verify_decisions.py`). `evidence_refs` are the stable IDs the investigator (M4) may cite (plan A11).
+
+### Rate limiting (M2, ADR-025)
+Per API client, fixed one-second window, `LG_RATE_LIMIT_PER_SECOND` (default 1000). Applies to every `/v1` route. Fails open when Redis is unavailable.
+
 ## Planned
 | Method & path | Auth | Purpose | Milestone |
 |---|---|---|---|
-| `POST /v1/transactions` (risk evaluation) | `X-API-Key` + `Idempotency-Key` | Same endpoint; fills `decision`, `risk_score`, versions | M2 |
-| `GET /v1/transactions/{id}/decisions` | `X-API-Key` | Decision history with versions and reason codes | M2 |
 | `GET /v1/investigations` | Supabase JWT (analyst/admin) | Case queue; filters: status, priority, date; cursor pagination | M5 |
 | `GET /v1/investigations/{id}` | JWT | Case, evidence refs, AI summary with citations | M5 |
 | `POST /v1/investigations/{id}/actions` | JWT | assign / approve / decline / escalate / note; audited | M5 |

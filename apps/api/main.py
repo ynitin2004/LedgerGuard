@@ -13,12 +13,16 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI
-from redis.asyncio import Redis
 
 from apps.api.problems import install_problem_handlers
 from apps.api.routers import health, transactions
 from ledgerguard import __version__
-from ledgerguard.application.transactions import CreateTransaction, GetTransaction
+from ledgerguard.application.api_clients import CachingAuthenticator
+from ledgerguard.application.transactions import (
+    CreateTransaction,
+    GetTransaction,
+    ListDecisions,
+)
 from ledgerguard.config import Settings, get_settings
 from ledgerguard.infrastructure.db.engine import create_engine, create_session_factory
 from ledgerguard.infrastructure.db.migrations import expected_head
@@ -28,7 +32,10 @@ from ledgerguard.infrastructure.health import (
     kafka_probe,
     postgres_probe,
     redis_probe,
+    risk_engine_probe,
 )
+from ledgerguard.infrastructure.redis import RedisRateLimiter, RedisVelocityStore, create_redis
+from ledgerguard.infrastructure.risk_engine_provider import RiskEngineProvider
 from ledgerguard.observability.correlation import CorrelationIdMiddleware
 from ledgerguard.observability.logging import configure_logging, get_logger
 from ledgerguard.observability.tracing import configure_telemetry
@@ -55,28 +62,37 @@ def create_app(settings: Settings | None = None, probes: list[Probe] | None = No
 
         engine = create_engine(settings)
         uow_factory = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+        # Two Redis clients: the hot path fails fast (no retries, tight timeout); the
+        # readiness probe tolerates a slower answer.
+        hot_redis = create_redis(settings.redis_url, settings.redis_timeout_s)
+        probe_redis = create_redis(settings.redis_url, settings.readiness_timeout_s)
+        engines = RiskEngineProvider(
+            uow_factory, settings.risk_assets_dir, settings.rules_version, settings.policy_version
+        )
         app.state.uow_factory = uow_factory
+        app.state.authenticator = CachingAuthenticator(uow_factory, settings.api_key_cache_ttl_s)
+        app.state.rate_limiter = RedisRateLimiter(hot_redis, settings.rate_limit_per_second)
         app.state.create_transaction = CreateTransaction(
-            uow_factory, timedelta(seconds=settings.idempotency_ttl_s)
+            uow_factory,
+            timedelta(seconds=settings.idempotency_ttl_s),
+            engines,
+            RedisVelocityStore(hot_redis),
         )
         app.state.get_transaction = GetTransaction(uow_factory)
-        redis = Redis.from_url(
-            settings.redis_url,
-            socket_connect_timeout=settings.readiness_timeout_s,
-            socket_timeout=settings.readiness_timeout_s,
-        )
+        app.state.list_decisions = ListDecisions(uow_factory)
         app.state.engine = engine
-        app.state.redis = redis
         app.state.probes = [
             postgres_probe(engine, expected_head(settings.alembic_ini_path)),
-            redis_probe(redis),
+            risk_engine_probe(engines),
+            redis_probe(probe_redis),
             kafka_probe(settings.kafka_bootstrap_servers, settings.readiness_timeout_s),
         ]
         log.info("api.startup", env=settings.env, version=__version__)
         try:
             yield
         finally:
-            await redis.aclose()
+            await hot_redis.aclose()
+            await probe_redis.aclose()
             await engine.dispose()
             log.info("api.shutdown")
 

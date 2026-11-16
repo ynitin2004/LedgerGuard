@@ -8,11 +8,14 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'env', 'install', 'up', 'down', 'down-volumes', 'ps', 'logs', 'db-role',
-                 'migrate', 'api', 'worker-janitor', 'api-client', 'test', 'test-unit', 'lint', 'fmt',
+                 'migrate', 'api', 'worker-janitor', 'api-client', 'train', 'register-model', 'seed',
+                 'verify-decisions', 'bench-up', 'load', 'test', 'test-unit', 'lint', 'fmt',
                  'typecheck', 'check')]
     [string]$Target = 'help',
-    # Used by api-client: ./scripts/dev.ps1 api-client -Name demo
-    [string]$Name = 'demo'
+    # Used by api-client and seed: ./scripts/dev.ps1 seed -Name demo
+    [string]$Name = 'demo',
+    # Used by load: ./scripts/dev.ps1 load -ApiKey <key printed by seed>
+    [string]$ApiKey = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,13 +37,13 @@ function Initialize-Env {
 
 switch ($Target) {
     'help' {
-        Write-Host 'Targets: env install up down down-volumes ps logs db-role migrate api worker-janitor api-client test test-unit lint fmt typecheck check'
+        Write-Host 'Targets: env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions bench-up load test test-unit lint fmt typecheck check'
     }
     'env' { Initialize-Env }
     'install' { Invoke-Step uv @('sync', '--frozen') }
     'up' { Initialize-Env; Invoke-Step docker @('compose', 'up', '-d', '--wait', '--wait-timeout', '180') }
-    'down' { Invoke-Step docker @('compose', 'down') }
-    'down-volumes' { Invoke-Step docker @('compose', 'down', '-v') }
+    'down' { Invoke-Step docker @('compose', '--profile', 'bench', 'down') }
+    'down-volumes' { Invoke-Step docker @('compose', '--profile', 'bench', 'down', '-v') }
     'ps' { Invoke-Step docker @('compose', 'ps') }
     'logs' { Invoke-Step docker @('compose', 'logs', '-f', '--tail', '100') }
     'db-role' { Initialize-Env; Invoke-Step docker @('compose', 'exec', '-T', 'postgres', 'sh', '/docker-entrypoint-initdb.d/10-app-role.sh') }
@@ -51,6 +54,26 @@ switch ($Target) {
     }
     'worker-janitor' { Initialize-Env; Invoke-Step uv @('run', 'python', '-m', 'apps.worker', 'janitor') }
     'api-client' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/create_api_client.py', '--name', $Name) }
+    'train' {
+        # numpy cannot load on this PC (Application Control), so train in a Linux container (ADR-021).
+        Invoke-Step docker @('build', '-q', '-t', 'ledgerguard-ml:local', 'infra/ml')
+        Invoke-Step docker @('run', '--rm', '-v', "${PWD}:/repo", '-v', 'ledgerguard-uv-cache:/root/.cache/uv',
+            'ledgerguard-ml:local', 'uv', 'run', '--frozen', '--no-dev', '--group', 'ml', 'python', 'scripts/train_model.py')
+    }
+    'register-model' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/register_model.py', 'models/lr-v1.json', '--activate') }
+    'seed' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/seed_history.py', '--name', $Name) }
+    'verify-decisions' { Initialize-Env; Invoke-Step uv @('run', 'python', 'scripts/verify_decisions.py') }
+    'bench-up' {
+        Initialize-Env
+        Invoke-Step docker @('build', '-f', 'infra/api/Dockerfile', '-t', 'ledgerguard-api:local', '.')
+        Invoke-Step docker @('compose', '--profile', 'bench', 'up', '-d', '--no-build', '--wait', 'api')
+    }
+    'load' {
+        if (-not $ApiKey) { throw 'Pass -ApiKey <key printed by ./scripts/dev.ps1 seed>' }
+        $env:LOAD_API_KEY = $ApiKey
+        Invoke-Step docker @('compose', '--profile', 'bench', 'run', '--rm', '--no-deps', 'k6', 'run',
+            '--summary-export', '/load/results/latest.json', '/load/transactions.js')
+    }
     'test' { Invoke-Step uv @('run', 'python', '-m', 'pytest') }
     'test-unit' { Invoke-Step uv @('run', 'python', '-m', 'pytest', '-m', 'not integration') }
     'lint' {

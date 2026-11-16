@@ -17,14 +17,14 @@ Verified 2026-11-05: all Prometheus targets `up` (otel-collector-app-metrics, ot
 - Never log secrets, API keys, full request bodies or LLM prompts containing evidence (M4 logs prompt *version* + token counts only).
 
 ## Traces
-FastAPI auto-instrumentation creates a server span per request; the correlation ID is added as a span attribute. `/healthz` and `/readyz` are excluded. Planned spans: idempotency, features, rules, model, policy, commit (M2); outbox publish/consume with context propagated in Kafka headers (M3); LLM calls with token and cost attributes (M4).
+FastAPI auto-instrumentation creates a server span per request; the correlation ID is added as a span attribute. `/healthz` and `/readyz` are excluded. Each decision logs `transaction.evaluated` (decision, score, reasons). Redis degradation logs `velocity.redis_unavailable`, `velocity.rebuild_failed`, `velocity.record_failed` and `rate_limit.unavailable` (M2). Planned spans: idempotency, features, rules, model, policy, commit (moved to M6 with the dashboards); outbox publish/consume with context propagated in Kafka headers (M3); LLM calls with token and cost attributes (M4).
 
 ## Metrics — planned catalogue
 | Metric | Type | Milestone |
 |---|---|---|
 | HTTP server duration / active requests | histogram / gauge | **M0 (auto)** |
-| `decision_stage_duration_ms{stage}` | histogram | M2 |
-| `decisions_total{decision,policy_version}` | counter | M2 |
+| `decision_stage_duration_ms{stage}` | histogram | M6 (moved from M2: built together with the dashboards that use it) |
+| `decisions_total{decision,policy_version}` | counter | M6 (moved from M2; until then decisions are queryable in `risk_decisions`) |
 | `outbox_backlog` (unpublished rows), `outbox_publish_lag_ms` | gauge / histogram | M3 |
 | consumer lag per group (Redpanda), `dlq_messages_total` | gauge / counter | M3 |
 | `llm_tokens_total`, `llm_cost_usd_total`, `llm_budget_exhausted_total` | counter | M4 |

@@ -2,6 +2,7 @@
 
 > **Implemented (M0):** secret hygiene, localhost-only port bindings, input validation of correlation IDs, CI without credentials.
 > **Implemented (M1):** hashed API keys, tenant-scoped reads, idempotency conflict detection, append-only audit trail via a least-privilege DB role, strict input validation, problem+json without internals.
+> **Implemented (M2):** rate limiting, append-only risk decisions, rules as data (no eval), model artifacts as JSON with sha256 (no pickle), tenant-scoped feature history.
 > Threat-model mitigations marked **Planned** arrive with the milestone shown.
 
 ## Secrets
@@ -18,7 +19,10 @@ All compose ports bind to `127.0.0.1`, so nothing is reachable from the LAN. Gra
 | Threat | Mitigation | Status |
 |---|---|---|
 | Header injection via correlation ID | Strict charset/length; otherwise replaced with a UUID | **M0, tested** |
-| Stolen API key | SHA-256 hash at rest (256-bit random keys, so no KDF needed), per-client status (revoked = 401, same response as unknown); rate limiting | **M1, tested**; rate limit Planned (M2) |
+| Stolen API key | SHA-256 hash at rest (256-bit random keys, so no KDF needed), per-client status (revoked = 401, same response as unknown); per-client rate limit (429). **Revocation applies within 10 s** because lookups are cached per process (ADR-024) | **M1/M2, tested** |
+| Tampering with risk decisions | Append-only `risk_decisions` (app role INSERT/SELECT only); app role can only read `model_registry` | **M2, tested** |
+| Malicious or corrupted risk assets | Rules are data (no `eval`); released rule/policy files pinned by SHA-256 in tests; model loaded from JSON (no pickle) and checked against its stored sha256 | **M2, tested** |
+| Cross-tenant feature leakage | Feature history is queried and cached per `(client_id, customer_token)` | **M2, tested** (`test_history_is_tenant_scoped`) |
 | Cross-tenant data access | Every query scoped by `client_id`; another client's transaction returns the same 404 as a missing one | **M1, tested** (analyst/JWT paths M5) |
 | Replayed / duplicated requests | Idempotency keys scoped by client, request-hash mismatch → 409 | **M1, tested** |
 | Tampering with audit trail | Append-only table; runtime role `ledgerguard_app` has INSERT/SELECT only, no DDL | **M1, tested** |

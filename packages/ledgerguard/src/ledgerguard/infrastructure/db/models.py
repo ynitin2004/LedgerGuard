@@ -67,8 +67,12 @@ class TransactionRow(Base):
             "decision IS NULL OR decision IN ('approve', 'decline', 'review')", name="decision"
         ),
         Index("ix_transactions_client_id_created_at", "client_id", text("created_at DESC")),
+        # Feature history lookup is always tenant-scoped (M2): client first.
         Index(
-            "ix_transactions_customer_token_created_at", "customer_token", text("created_at DESC")
+            "ix_transactions_client_id_customer_token_created_at",
+            "client_id",
+            "customer_token",
+            text("created_at DESC"),
         ),
         Index("ix_transactions_merchant_id_created_at", "merchant_id", text("created_at DESC")),
     )
@@ -130,4 +134,62 @@ class AuditEventRow(Base):
     metadata_: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    created_at: Mapped[datetime] = _created_at()
+
+
+class RiskDecisionRow(Base):
+    """One evaluation of a transaction. Never updated: overrides add a new row (plan A6).
+
+    ``feature_snapshot`` + the three versions are enough to recompute ``decision``,
+    ``score`` and ``model_score`` exactly (replay test).
+    """
+
+    __tablename__ = "risk_decisions"
+    __table_args__ = (
+        CheckConstraint("decision IN ('approve', 'decline', 'review')", name="decision"),
+        CheckConstraint("score >= 0 AND score <= 1", name="score_range"),
+        CheckConstraint("model_score >= 0 AND model_score <= 1", name="model_score_range"),
+        Index("ix_risk_decisions_transaction_id", "transaction_id"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    transaction_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("transactions.id"), nullable=False
+    )
+    rules_version: Mapped[str] = mapped_column(Text, nullable=False)
+    model_version: Mapped[str] = mapped_column(Text, nullable=False)
+    thresholds_version: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    score: Mapped[Decimal] = mapped_column(Numeric(6, 5), nullable=False)
+    model_score: Mapped[Decimal] = mapped_column(Numeric(6, 5), nullable=False)
+    reason_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    feature_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ModelRegistryRow(Base):
+    """Registered model artifacts. Exactly one may be active (partial unique index)."""
+
+    __tablename__ = "model_registry"
+    __table_args__ = (
+        Index(
+            "uq_model_registry_single_active",
+            "active",
+            unique=True,
+            postgresql_where=text("active"),
+        ),
+    )
+
+    model_version: Mapped[str] = mapped_column(Text, primary_key=True)
+    algo: Mapped[str] = mapped_column(Text, nullable=False)
+    trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    artifact_path: Mapped[str] = mapped_column(Text, nullable=False)
+    # The full artifact lives in the database, so serving and replay never depend on
+    # files on the API host; the hash ties it to the file in models/.
+    artifact: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    artifact_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    active: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = _created_at()

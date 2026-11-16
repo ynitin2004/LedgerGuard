@@ -1,0 +1,109 @@
+{
+  "algo": "logistic_regression",
+  "coefficients": [
+    -0.7278917478936118,
+    0.3583520584434232,
+    0.38415814751236255,
+    0.5312186365548893,
+    0.451986709083007,
+    -0.00018853781526284585,
+    -2.795029818936904,
+    0.32076153178678085
+  ],
+  "features": [
+    "log_amount",
+    "velocity_5m",
+    "velocity_1h",
+    "history_count_30d",
+    "amount_zscore",
+    "is_new_merchant",
+    "category_share_30d",
+    "failed_24h"
+  ],
+  "intercept": -9.261084081053589,
+  "means": [
+    8.19593666829526,
+    0.21322346959092092,
+    0.37091265526166667,
+    21.591089397025716,
+    0.01825441983060978,
+    0.3115188458180816,
+    0.402648794694687,
+    0.0727183618458334
+  ],
+  "metrics": {
+    "dataset": "synthetic",
+    "gradient_boosting_adopted": false,
+    "gradient_boosting_pr_auc": 0.5344,
+    "model": {
+      "at_0_5": {
+        "flagged": 90,
+        "fpr": 0.00035,
+        "precision": 0.8889,
+        "recall": 0.3828
+      },
+      "pr_auc": 0.5358,
+      "roc_auc": 0.9238
+    },
+    "parity_max_abs_diff": 4.440892098500626e-16,
+    "policy": {
+      "decisions": {
+        "approve": 28411,
+        "decline": 120,
+        "review": 521
+      },
+      "decline": {
+        "flagged": 120,
+        "fpr": 0.00118,
+        "precision": 0.7167,
+        "recall": 0.4115
+      },
+      "review_or_decline": {
+        "flagged": 641,
+        "fpr": 0.01758,
+        "precision": 0.209,
+        "recall": 0.6411
+      },
+      "rule_hits": {
+        "AMOUNT_ZSCORE": 248,
+        "CATEGORY_SHIFT": 101,
+        "NEW_MERCHANT": 202,
+        "REPEAT_FAIL_24H": 87,
+        "VELOCITY_1H": 30,
+        "VELOCITY_5M": 82
+      },
+      "version": "rules@1.0+model@v1+thresholds@1.0"
+    },
+    "test_fraud_rate": 0.00719,
+    "test_rows": 29052,
+    "test_window_days": 9,
+    "train_fraud_rate": 0.00352,
+    "train_rows": 65293
+  },
+  "scales": [
+    0.7916359227416295,
+    0.6121051162000614,
+    0.9089399486690206,
+    15.67049218631116,
+    1.1302691939846903,
+    0.4631142996262736,
+    0.245803602903981,
+    0.3250980071087193
+  ],
+  "training": {
+    "estimator": "StandardScaler + LogisticRegression(C=1.0, lbfgs, max_iter=2000)",
+    "numpy": "2.5.5",
+    "python": "3.12.10",
+    "scikit_learn": "1.9.1",
+    "seed": 7,
+    "split": "time-based; test = last 9 days",
+    "synthetic_config": {
+      "customers": 2000,
+      "days": 30,
+      "end": "2026-01-31T00:00:00+00:00",
+      "merchants": 400
+    },
+    "trained_at": "2026-11-16T08:48:03+00:00"
+  },
+  "version": "v1"
+}

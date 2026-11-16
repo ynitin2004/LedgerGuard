@@ -21,7 +21,10 @@ def create_engine(settings: Settings) -> AsyncEngine:
         settings.database_url,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout_s,
         pool_pre_ping=True,
+        # asyncpg per-query client-side timeout: covers server stalls and network hangs.
+        connect_args={"command_timeout": settings.db_command_timeout_s},
     )
 
 

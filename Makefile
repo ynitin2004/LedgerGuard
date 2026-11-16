@@ -1,7 +1,7 @@
 # LedgerGuard AI task runner (Linux/macOS/CI/EC2).
 # Windows equivalent with identical targets: ./scripts/dev.ps1 <target>
 .DEFAULT_GOAL := help
-.PHONY: help env install up down down-volumes ps logs db-role migrate api worker-janitor api-client test test-unit lint fmt typecheck check
+.PHONY: help env install up down down-volumes ps logs db-role migrate api worker-janitor api-client train register-model seed verify-decisions bench-up load test test-unit lint fmt typecheck check
 
 help:  ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -16,10 +16,10 @@ up: env  ## Start local infrastructure and wait until healthy
 	docker compose up -d --wait --wait-timeout 180
 
 down:  ## Stop local infrastructure (data kept)
-	docker compose down
+	docker compose --profile bench down
 
 down-volumes:  ## Stop local infrastructure and DELETE its data
-	docker compose down -v
+	docker compose --profile bench down -v
 
 ps:  ## Show service health
 	docker compose ps
@@ -41,6 +41,25 @@ worker-janitor: env  ## Run the janitor worker (purges expired idempotency keys)
 
 api-client: env  ## Create an API client: make api-client NAME=demo
 	uv run python scripts/create_api_client.py --name $(or $(NAME),demo)
+
+train:  ## Train the risk model on synthetic data -> models/lr-v1.json (needs numpy)
+	uv run python scripts/train_model.py
+
+register-model: env  ## Register models/lr-v1.json and make it active (schema owner)
+	uv run python scripts/register_model.py models/lr-v1.json --activate
+
+seed: env  ## Seed 30 days of synthetic history for a new client: make seed NAME=demo
+	uv run python scripts/seed_history.py --name $(or $(NAME),demo)
+
+verify-decisions: env  ## Replay every stored decision; fails on any mismatch
+	uv run python scripts/verify_decisions.py
+
+bench-up: env  ## Build and start the containerised API (4 workers) on 127.0.0.1:8001
+	docker build -f infra/api/Dockerfile -t ledgerguard-api:local .
+	docker compose --profile bench up -d --no-build --wait api
+
+load: env  ## k6 hot-path load test: LOAD_API_KEY=<key from make seed> make load
+	docker compose --profile bench run --rm --no-deps k6 run --summary-export /load/results/latest.json /load/transactions.js
 
 test:  ## All tests (integration tests need Docker)
 	uv run python -m pytest

@@ -11,11 +11,14 @@ The first PC had tools blocked or missing. On a new PC, before any milestone wor
    - **Not** k6: it runs through the `grafana/k6` Docker image from M2 on (ADR-010). Never install `httpx2`; tests use `httpx`.
    - Hypothesis is pinned `<6.156` because newer versions ship a compiled extension the first PC blocks (ADR-019).
      Check that `uv run python -c "import hypothesis"` works; keep the pin while the first PC is still in use.
+   - numpy/scikit-learn and confluent-kafka are blocked on the first PC (ADR-021/022). Check that
+     `uv run python -c "import numpy, sklearn, confluent_kafka"` works on the new PC. If it does, `make train` and the
+     ML test run natively there; keep the Docker paths (`dev.ps1 train`, `bench-up`) for the first PC.
 3. Workarounds from the first PC. Keep them, they work everywhere: tools run as `uv run python -m <tool>`, because Windows
    Application Control blocked `.venv\Scripts\*.exe` (os error 4551, ADR-016). Host URLs use `127.0.0.1` (ADR-009).
    Postgres is on 55432, because 5432 was taken.
-4. Verify: `uv sync`, `cp .env.example .env` (`dev.ps1 up` does this), `up`, `migrate`, `lint`, `typecheck`, `test`. All must
-   pass. Then `curl http://127.0.0.1:8000/readyz` with the API running should return `"status":"ready"`.
+4. Verify: `uv sync`, `cp .env.example .env` (`dev.ps1 up` does this), `up`, `migrate`, `register-model`, `lint`, `typecheck`,
+   `test`. All must pass. Then `curl http://127.0.0.1:8000/readyz` with the API running should return `"status":"ready"`.
 5. Set the git identity repo-locally: `user.name=ynitin2004`, `user.email=ynitin2004@users.noreply.github.com`.
 6. When steps 1–5 pass, **delete this section** from CLAUDE.md and the matching line in AGENTS.md. Commit as
    `chore: complete one-time machine setup`.
@@ -52,6 +55,8 @@ GitHub Actions · Next.js dashboard (M9) · AWS EC2 (M10).
 - No hardcoded secrets (`.env` only, git-ignored). Use `127.0.0.1`, not `localhost`, in host URLs (ADR-009).
 - Runtime code connects as `ledgerguard_app` (`LG_DATABASE_URL`); migrations/admin as the owner. Every new table needs an
   explicit GRANT in its migration (ADR-017). Errors are problem+json via `apps/api/problems.py`.
+- Risk assets are immutable once released: change rules/policy => new `v<x.y>.yaml`; new model => new `vN` (ADR-020).
+  `risk/` stays pure; features come from one function shared by serving, training and replay.
 - Never fabricate results: BENCHMARK.md and MODEL_CARD.md only hold numbers produced by repo scripts.
 
 ## Workflow
@@ -68,7 +73,13 @@ uv sync                                    # install locked deps into .venv
 ./scripts/dev.ps1 db-role                  # app-role login for volumes created before M1 (once)
 ./scripts/dev.ps1 migrate                  # alembic upgrade head, as the schema owner
 ./scripts/dev.ps1 api                      # uvicorn --factory apps.api.main:create_app --reload :8000
+./scripts/dev.ps1 register-model           # register models/lr-v1.json and activate it (needed for /readyz)
 ./scripts/dev.ps1 api-client -Name demo    # create an API client, prints its key once
+./scripts/dev.ps1 seed -Name demo          # new client + 30 days of synthetic history (prints its key)
+./scripts/dev.ps1 train                    # retrain the model (Linux container on Windows, ADR-021)
+./scripts/dev.ps1 verify-decisions         # replay every stored decision; fails on any mismatch
+./scripts/dev.ps1 bench-up                 # API in a Linux container (4 workers) on 127.0.0.1:8001
+./scripts/dev.ps1 load -ApiKey <key>       # k6 200 RPS / 60 s against the bench API (ADR-022)
 ./scripts/dev.ps1 worker-janitor           # purge expired idempotency keys (loop; --once via python -m)
 ./scripts/dev.ps1 test                     # pytest (unit + Testcontainers integration; needs Docker)
 ./scripts/dev.ps1 test-unit                # pytest -m "not integration"

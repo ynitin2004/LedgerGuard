@@ -1,0 +1,59 @@
+# Rule set 1.0. Immutable once released: change anything => new file with a new version
+# (tests pin this file's SHA-256). Features: packages/ledgerguard/src/ledgerguard/risk/features.py
+# hard = decline outright; soft = review, and its weight is added to the combined score.
+# Thresholds were chosen from the synthetic-data profile recorded in docs/MODEL_CARD.md.
+version: "1.0"
+rules:
+  - code: VELOCITY_5M
+    description: Four or more payments by this customer in the previous 5 minutes (card testing).
+    severity: soft
+    weight: 0.35
+    when:
+      - {feature: velocity_5m, op: ">=", value: 4}
+
+  - code: VELOCITY_1H
+    description: Eight or more payments by this customer in the previous hour.
+    severity: soft
+    weight: 0.20
+    when:
+      - {feature: velocity_1h, op: ">=", value: 8}
+
+  - code: AMOUNT_ZSCORE
+    description: Amount far above this customer's usual amounts (log-amount z-score >= 3.5).
+    severity: soft
+    weight: 0.20
+    when:
+      - {feature: history_count_30d, op: ">=", value: 5}
+      - {feature: amount_zscore, op: ">=", value: 3.5}
+
+  - code: NEW_MERCHANT
+    description: First payment to this merchant, with an unusually high amount (z-score >= 2).
+    severity: soft
+    weight: 0.10
+    when:
+      - {feature: history_count_30d, op: ">=", value: 5}
+      - {feature: is_new_merchant, op: "==", value: 1}
+      - {feature: amount_zscore, op: ">=", value: 2.0}
+
+  - code: CATEGORY_SHIFT
+    description: Merchant category never used by this customer in 30 days, with an above-usual amount.
+    severity: soft
+    weight: 0.10
+    when:
+      - {feature: history_count_30d, op: ">=", value: 10}
+      - {feature: category_share_30d, op: "==", value: 0}
+      - {feature: amount_zscore, op: ">=", value: 1.0}
+
+  - code: REPEAT_FAIL_24H
+    description: Three or more failed payments by this customer in the previous 24 hours.
+    severity: hard
+    weight: 0
+    when:
+      - {feature: failed_24h, op: ">=", value: 3}
+
+  - code: HIGH_AMOUNT_ABS
+    description: Single payment of 10,000.00 or more (minor units, 2-decimal currencies). Business limit.
+    severity: hard
+    weight: 0
+    when:
+      - {feature: amount_minor, op: ">=", value: 1000000}

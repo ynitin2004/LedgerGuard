@@ -60,8 +60,8 @@ jobs:
       - name: make up (wait for healthchecks)
         run: make up
 
-      - name: make migrate
-        run: make install migrate
+      - name: make migrate + register the risk model
+        run: make install migrate register-model
 
       - name: API liveness and readiness against the real stack
         # The venv's python is used directly (not `uv run`): a lingering `uv run`
@@ -86,10 +86,16 @@ jobs:
           post() { curl -s -o /tmp/resp.json -w '%{http_code}' -X POST http://127.0.0.1:8000/v1/transactions \
             -H "X-API-Key: $KEY" -H "Idempotency-Key: ci-1" -H 'content-type: application/json' -d "$1"; }
           test "$(post "$BODY")" = 201 && cp /tmp/resp.json /tmp/first.json && cat /tmp/first.json
+          # M2: the response carries a decision from the versioned engine.
+          grep -q '"decision":"approve"' /tmp/first.json
+          grep -q '"policy_version":"rules@1.0+model@v1+thresholds@1.0"' /tmp/first.json
           # Replay: same JSON document (jsonb may reorder keys, so compare parsed values).
           test "$(post "$BODY")" = 201
           python3 -c 'import json,sys; a,b=(json.load(open(p)) for p in sys.argv[1:]); assert a==b, (a,b)' /tmp/first.json /tmp/resp.json
           test "$(post "${BODY/1250/999}")" = 409 && cat /tmp/resp.json
+
+      - name: Stored decisions replay exactly
+        run: make verify-decisions
 
       - name: Service logs on failure
         if: failure()
