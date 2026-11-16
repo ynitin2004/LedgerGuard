@@ -8,7 +8,7 @@ Status: ✅ done · 🟡 in progress / partially verified · ⬜ not started
 | 0 | 1 | Foundation | ✅ done — verified locally and CI green (run 42002451764) |
 | 1 | 2 | api_clients, transactions API, idempotency, audit, problem+json | ✅ done — verified locally and CI green (run 42166619870) |
 | 2 | 3–4 | Synthetic data, rules v1, features, LR model, policy, decisions endpoint, first k6 | ✅ done — verified locally and CI green (run 43839427935) |
-| 3 | 5 | Outbox, publisher, consumers + inbox, retry/DLQ, replay CLI | 🟡 implemented and verified locally (incl. Linux test run and chaos drills); CI pending |
+| 3 | 5 | Outbox, publisher, consumers + inbox, retry/DLQ, replay CLI | ✅ done — verified locally, Linux suite, chaos drills, CI green (run 43857220697) |
 | 4 | 6–7 | Investigator: evidence, LLM client, validation, cases | ⬜ |
 | 5 | 8 | Supabase JWT, investigations API, webhooks | ⬜ |
 | 6 | 9–10 | Failure matrix, chaos, k6 suite, dashboards → **tag v0.1.0** | ⬜ |
@@ -79,7 +79,7 @@ Acceptance (plan v2): kill the publisher mid-batch under load, then no lost even
 - [x] Chaos drill on the real stack (publisher + consumer SIGKILL under 200 RPS): reconciled exactly; drain 754 events/s (1 replica) → 1,419 (3 replicas)
 - [x] Hot-path benchmark with outbox: p50 12.8–13.0 / p93 22.1–22.3 / p97 30.8–32.8 / p99 51.8–56.1 ms at 200 RPS
 - [x] CI stack job runs both workers and reconciles
-- [ ] CI green on GitHub
+- [x] CI green: https://github.com/ynitin2004/LedgerGuard/actions/runs/43857220697
 
 ## M6 — scaling additions (user request 2026-11-16; proposals ADR-026..030)
 - [ ] PgBouncer (transaction pooling) + replica-count load test that shows the connection wall and the fix (ADR-026)
