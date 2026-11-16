@@ -7,7 +7,7 @@ Status: ✅ done · 🟡 in progress / partially verified · ⬜ not started
 |---|---|---|---|
 | 0 | 1 | Foundation | ✅ done — verified locally and CI green (run 42002451764) |
 | 1 | 2 | api_clients, transactions API, idempotency, audit, problem+json | ✅ done — verified locally and CI green (run 42166619870) |
-| 2 | 3–4 | Synthetic data, rules v1, features, LR model, policy, decisions endpoint, first k6 | 🟡 implemented and verified locally; CI pending |
+| 2 | 3–4 | Synthetic data, rules v1, features, LR model, policy, decisions endpoint, first k6 | ✅ done — verified locally and CI green (run 43839427935) |
 | 3 | 5 | Outbox, publisher, consumers + inbox, retry/DLQ, replay CLI | ⬜ |
 | 4 | 6–7 | Investigator: evidence, LLM client, validation, cases | ⬜ |
 | 5 | 8 | Supabase JWT, investigations API, webhooks | ⬜ |
@@ -63,7 +63,7 @@ Acceptance (plan v2): the replay test reproduces decisions; MODEL_CARD has a mea
 - [x] MODEL_CARD with measured PR-AUC 0.5358 (policy: decline precision 0.72 / recall 0.41)
 - [x] k6 (`grafana/k6:1.7.0`, ADR-010) at 200 RPS: p99 44 / 42 / 59 ms over 3 runs, 0 errors (BENCHMARK.md, ADR-022)
 - [x] Tests: 111 passing locally (+1 ML test that runs in CI); CI registers the model, checks a decision and replays
-- [ ] CI green on GitHub
+- [x] CI green: https://github.com/ynitin2004/LedgerGuard/actions/runs/43839427935
 
 ## Backlog items found during M0 planning (assigned)
 - [x] M1: create `ledgerguard_app` DB role (least privilege; needed for `REVOKE UPDATE, DELETE` on append-only tables)
