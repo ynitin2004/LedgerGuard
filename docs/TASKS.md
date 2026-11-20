@@ -81,13 +81,72 @@ Acceptance (plan v2): kill the publisher mid-batch under load, then no lost even
 - [x] CI stack job runs both workers and reconciles
 - [x] CI green: https://github.com/ynitin2004/LedgerGuard/actions/runs/43857220697
 
-## M6 — scaling additions (user request 2026-11-16; proposals ADR-026..030)
+## M4 — AI investigator (planned)
+Acceptance (plan v2): invalid or fabricated evidence IDs rejected in tests (mock LLM); LLM timeout leaves the transaction untouched; the `needs_review` path works.
+
+- [ ] Evidence gatherer (SQL): rule hits `<risk_decision_id>:<RULE>`, prior transactions (UUIDs), merchant-stats snapshot (hash) as stable evidence IDs (plan A11)
+- [ ] `investigation_cases` table + migration + grants; one case per review/decline decision
+- [ ] `investigator` worker role: consumes `transaction.evaluated` through the inbox (review/decline only)
+- [ ] AgentRouter client: timeouts, max 2 retries, per-case token cap, daily budget in Redis; over budget → `needs_review` without LLM (plan A12)
+- [ ] Pydantic output schema; evidence-ID validator (every cited ID must exist); prompt-injection handling (evidence as delimited data)
+- [ ] Tests with a mock LLM: fabricated IDs rejected, timeout path, budget path, decision never changed
+- [ ] Docs + ADRs; MODEL/LLM usage notes; LinkedIn draft
+
+## M5 — Analyst API and webhooks (planned)
+Acceptance (plan v2): negative auth tests (wrong role, wrong tenant); webhook retry schedule asserted; audit rows for every action.
+
+- [ ] Supabase JWT verifier (issuer, audience, expiry; role from `app_metadata`) + dev signer `scripts/mint_dev_jwt.py`
+- [ ] `/v1/investigations` list (filters, cursor pagination), get, actions (assign / approve / decline / escalate / note), all audited; `case_actions` append-only
+- [ ] Analyst overrides add a new `risk_decisions` row (never mutate)
+- [ ] Webhooks: register/list/delete, HMAC-SHA256 over `timestamp.body`, `webhook-sender` worker with backoff (max 5), deliveries table, SSRF protections, receiver stub
+- [ ] Admin endpoints (`/v1/admin/*`): API clients, model/policy activation
+- [ ] Tests + docs + ADRs; benchmark rerun if the hot path changed (p50/p93/p97/p99)
+
+## M6 — Prove it, then tag v0.1.0 (planned)
+Acceptance (plan v2): every FAILURE_MATRIX row has a passing test or scripted demo; dashboards screenshot in README; **tag v0.1.0 = MVP**.
+
+Original plan scope:
+- [ ] FAILURE_MATRIX tests: Redis down, broker down, DB failover (F12), stalled DB (F4d), consumer crash; chaos script committed (today's drills are ad hoc)
+- [ ] k6 suite: hot path, mixed read/write, sustained soak; every run reports p50 / p93 / p97 / p99 (standing rule)
+- [ ] OTel stage spans + `decision_stage_duration_ms`, `decisions_total` (moved from M2); trace backend (Tempo/Jaeger)
+- [ ] Grafana dashboards: p99 by stage, consumer lag, outbox backlog, DLQ, LLM cost; alerts (rate-limit fail-open, lag, DLQ)
+- [ ] Dependency audit in CI (pip-audit or Dependabot)
+
+Scaling additions (user request 2026-11-16; proposals ADR-026..030):
 - [ ] PgBouncer (transaction pooling) + replica-count load test that shows the connection wall and the fix (ADR-026)
 - [ ] Monthly time partitioning for append-mostly tables + 10× data-volume benchmark (ADR-027)
 - [ ] Read replica routing for read-heavy endpoints + mixed-load benchmark (ADR-028)
 - [ ] Autoscaling signals (CPU/p99 for API, consumer lag + outbox age for workers) + scale-out drill; partition-count rationale (ADR-029)
 - [ ] Record measured single-primary limits and the sharding trigger and key; multi-region out of scope (ADR-030)
-- [ ] Every benchmark reports p50 / p93 / p97 / p99 (standing rule)
+
+## M7 — RAG prerequisite (planned)
+Acceptance (plan v2): BENCHMARK shows tsvector baseline numbers → ADR "pgvector justified / not" based on data.
+
+- [ ] Synthetic policy corpus: handbook, reason-code glossary, ~300 case notes; `documents` table
+- [ ] Baseline retrieval with Postgres `tsvector`
+- [ ] Golden set (60 questions) + eval runner → measured recall@6
+- [ ] ADR: is pgvector justified? (decided from the measurements)
+
+## M8 — Retrieval (planned)
+Acceptance (plan v2): chunker comparison table; recall@6 improvement vs baseline recorded; CI fails on a > 3-point regression; faithfulness + unsupported-claim rate measured.
+
+- [ ] Chunkers (fixed / recursive / semantic) behind one interface
+- [ ] Embeddings via AgentRouter (+ fastembed fallback in CI); pgvector HNSW only if M7 justifies it
+- [ ] Hybrid retrieval (RRF) + cross-encoder rerank; investigator cites chunk IDs
+- [ ] `evals.yml` CI gate; `rag-ingest` worker role
+
+## M9 — Analyst dashboard (planned)
+Acceptance (plan v2): analyst end-to-end flow recorded in a demo video.
+
+- [ ] Next.js app (`apps/web`) with Supabase Auth login, case queue, case view with citations, actions
+- [ ] Deployed to Vercel
+
+## M10 — Deploy (planned)
+Acceptance (plan v2): public URL; `docker compose up` on a clean box in < 5 min; all docs consistent.
+
+- [ ] Hardened production image (non-root, built and pushed by GitHub Actions); `compose.prod.yml`; Caddy TLS
+- [ ] EC2 host (`infra/ec2-bootstrap.sh`), Supabase production Postgres with migrations applied, secrets in SSM
+- [ ] README polish, 2–3 minute demo, ECS/Fargate path documented
 
 ## Backlog items found during M0 planning (assigned)
 - [x] M1: create `ledgerguard_app` DB role (least privilege; needed for `REVOKE UPDATE, DELETE` on append-only tables)
